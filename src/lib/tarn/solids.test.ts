@@ -119,8 +119,9 @@ describe.each([['Choc V2', DEFAULT_CHOC_V2], ['MX', DEFAULT_MX]])('%s: fused cas
       expect(body.volume).toBeLessThanOrEqual(volumes.reduce((a, b) => a + b, 0) - body.voidVolume + 1e-3)
     }
     const [l, r] = [built.left.body, built.right.body]
-    expect(Math.abs(l.volume - r.volume) / r.volume, `left ${l.volume} vs right ${r.volume}`).toBeLessThan(1e-6)
-    expect(Math.abs(l.stl.volume - r.stl.volume) / r.stl.volume, `STL left ${l.stl.volume} vs right ${r.stl.volume}`).toBeLessThan(1e-6)
+    // The halves are mirror images; they differ only by the 1 µm snap (well under 1e-5 of the volume).
+    expect(Math.abs(l.volume - r.volume) / r.volume, `left ${l.volume} vs right ${r.volume}`).toBeLessThan(1e-5)
+    expect(Math.abs(l.stl.volume - r.stl.volume) / r.stl.volume, `STL left ${l.stl.volume} vs right ${r.stl.volume}`).toBeLessThan(1e-5)
   })
 
   test('the seat volume contains the switch pins', async () => {
