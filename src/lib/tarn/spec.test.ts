@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
 import type { CosmosCluster, CosmosKeyboard } from '$lib/worker/config.cosmos'
+import { describe, expect, test } from 'bun:test'
 import { buildSpec, type Pose, type SpecHalf, type TarnSpec } from './spec'
 
 /** The Cosmos default layout (MX, direct solder) and the same layout with Choc V2 sockets. */
@@ -8,8 +8,7 @@ const DEFAULT_MX =
 const DEFAULT_CHOC_V2 =
   'https://ryanis.cool/cosmos/beta#cm:Cp0BChUSBRCAPyAnEgIgExICIAASADgxQAAKFRIFEIBLICcSAiATEgIgABIAOB1AAAoiEgUQgFcgJxICIBMSAiAAEgMQsC8SBRCwayAoOAlAgPC8AgofEgUQgGMgJxICIBMSAiAAEgMQsDsSBRCwIyAoOApAAAoZEgUQgG8gJxICIBMSAiAAEgA4HkCAhorABxgAQOiFoK7wVUjc8KKgAQqOAQorEhMQwIACQICAmAJIwpmglZC8AVBDEhJAgIDMAkjCmaCVkLwBUIYBWDo4CAoVEhAQQECAgCBI0JWA3ZD1A1ALUJ4CCicSEBBAQICA+AFI5pn8p5ALUFcSEUCAgKQDSPCZxLXQMFB0WJUBUH8YAiIOCMgBEMgBGAAgADAAOABAy4v8n9AxSK2R3I3BkwYYiiCCAQIEAg=='
 /** From model.test.ts: one column with a shaper key and a display, given as a bare hash. */
-const SHAPER_AND_DISPLAY =
-  'Ck8KRxIWCAgQMCATKGQw9ANAgOaQHEiAgJD9AxIVCBIQQCAAQIC8uAxIgLaqofoHiAFQEgkgAECrhbyc8DgSCSAAQKyFvJzwODgAGABAgJAXCgIYAiIKCMgBEMgBGAAgAGgAggECBALyAQIIAg=='
+const SHAPER_AND_DISPLAY = 'Ck8KRxIWCAgQMCATKGQw9ANAgOaQHEiAgJD9AxIVCBIQQCAAQIC8uAxIgLaqofoHiAFQEgkgAECrhbyc8DgSCSAAQKyFvJzwODgAGABAgJAXCgIYAiIKCMgBEMgBGAAgAGgAggECBALyAQIIAg=='
 
 const DESIGNS = { 'default MX': DEFAULT_MX, 'default Choc V2': DEFAULT_CHOC_V2, 'shaper and display': SHAPER_AND_DISPLAY }
 /** Designs with an ordinary keywell, where every finger key faces up and toward the typist. */
@@ -104,6 +103,28 @@ describe.each(Object.entries(DESIGNS))('%s', (_, url) => {
     }
     for (const [l, r] of [[left, right], [right, left]]) {
       expect(l.keys.map(k => [k.cluster, k.row, k.switch, k.socket, JSON.stringify(k.keycap)])).toEqual(r.keys.map(k => [k.cluster, k.row, k.switch, k.socket, JSON.stringify(k.keycap)]))
+    }
+  })
+
+  test('spec 0.2 harness fields: rotation and seat for switches, none for other parts, no retention yet', () => {
+    expect(spec.tarnSpec).toBe('0.2')
+    for (const key of spec.halves.flatMap(h => h.keys)) {
+      if (key.switch == 'other') {
+        expect(key.switchRotation, key.id).toBeNull()
+        expect(key.seat, key.id).toBeNull()
+      } else {
+        expect([0, 90, 180, 270], key.id).toContain(key.switchRotation!)
+        const seat = key.seat!
+        // The stiffener sits at the plate's underside, or lower where the switch housing reaches past it.
+        expect(seat.stiffenerTopZ, key.id).toBeLessThanOrEqual(seat.plateUndersideZ)
+        expect(seat.plateUndersideZ, key.id).toBeLessThan(0)
+        expect(seat.reserved.length, key.id).toBeGreaterThan(0)
+        for (const b of seat.reserved) for (let i = 0; i < 3; i++) expect(b.min[i], key.id).toBeLessThan(b.max[i])
+        // Without the CAD kernel nothing is measured.
+        expect(seat.clear, key.id).toBeNull()
+      }
+      expect(key.backstop, key.id).toBeUndefined()
+      expect(key.clamp, key.id).toBeUndefined()
     }
   })
 

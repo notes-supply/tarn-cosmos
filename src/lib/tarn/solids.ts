@@ -7,20 +7,28 @@
  * The caller must have run node-model's setup() with the repository root as
  * the working directory, because Cosmos resolves its socket and part assets
  * relative to it.
+ *
+ * STL parts are fused: every solid of a part is triangulated by OpenCascade,
+ * turned into a Manifold, and the solids are unioned with Manifold (fuseShapes).
+ * Cosmos's case body is several solids (walls, web, one per switch holder, one
+ * per screw attachment) that touch face to face, so the STEP keeps them apart
+ * as named solids and the STL is their union.
  */
 
 import { keyGeometry } from '$lib/loaders/keycaps'
 import { partGeometry } from '$lib/loaders/parts'
+import { newGeometry } from '$lib/worker/config'
 import { boardHolder, cutWithConnector, keyHoles, makePlate, makerScrewInserts, makeWalls, webSolid } from '$lib/worker/model'
 import { Assembly } from '$lib/worker/modeling/assembly'
-import { combine } from '$lib/worker/modeling/index'
+import { combine, getOC } from '$lib/worker/modeling/index'
 import Trsf from '$lib/worker/modeling/transformation'
-import { newGeometry } from '$lib/worker/config'
-import type { AnyShape } from 'replicad'
+import getManifold, { type Manifold, type ManifoldToplevel } from '@rianadon/manifold-3d'
+import { type AnyShape, cast } from 'replicad'
 import type { BufferGeometry } from 'three'
 import { Matrix4 } from 'three/src/math/Matrix4.js'
 import { Vector3 } from 'three/src/math/Vector3.js'
-import { type HalfContext, isSpecKey, keycapSeat, partFlipped, partMatrix } from './spec'
+import { partFlipped } from './harness'
+import { type HalfContext, isSpecKey, keycapSeat, partMatrix } from './spec'
 
 /** A triangle mesh in the half frame. */
 export interface TriMesh {
@@ -93,6 +101,135 @@ export async function buildCaseParts(ctx: HalfContext, timings: Record<string, n
   }
 }
 
+// ---------------------------------------------------------------------------
+// Manifold
+
+let kernel: ManifoldToplevel | undefined
+
+/** The Manifold library, loaded once. */
+export async function manifoldKernel(): Promise<ManifoldToplevel> {
+  if (!kernel) {
+    kernel = await getManifold()
+    kernel.setup()
+  }
+  return kernel
+}
+
+/** The solids of a shape (a compound of solids, or one solid). */
+export function solidsOf(shape: AnyShape): AnyShape[] {
+  const oc = getOC()
+  const out: AnyShape[] = []
+  const explorer = new oc.TopExp_Explorer_2(shape.wrapped, oc.TopAbs_ShapeEnum.TopAbs_SOLID as any, oc.TopAbs_ShapeEnum.TopAbs_SHAPE as any)
+  while (explorer.More()) {
+    out.push(cast(explorer.Current()))
+    explorer.Next()
+  }
+  explorer.delete()
+  return out
+}
+
+/** A Manifold from a triangle mesh whose shared edges have bit-identical vertices (as OpenCascade triangulates them). */
+export function toManifold(mf: ManifoldToplevel, mesh: TriMesh): Manifold {
+  const ids = new Map<string, number>()
+  const verts: number[] = []
+  const p = mesh.positions
+  const remap = new Uint32Array(p.length / 3)
+  for (let i = 0; i < remap.length; i++) {
+    const key = `${p[3 * i]},${p[3 * i + 1]},${p[3 * i + 2]}`
+    let j = ids.get(key)
+    if (j === undefined) {
+      j = verts.length / 3
+      ids.set(key, j)
+      verts.push(p[3 * i], p[3 * i + 1], p[3 * i + 2])
+    }
+    remap[i] = j
+  }
+  const tris: number[] = []
+  for (let t = 0; t < mesh.indices.length; t += 3) {
+    const a = remap[mesh.indices[t]], b = remap[mesh.indices[t + 1]], c = remap[mesh.indices[t + 2]]
+    if (a != b && b != c && a != c) tris.push(a, b, c)
+  }
+  const m = new mf.Mesh({ numProp: 3, vertProperties: new Float32Array(verts), triVerts: new Uint32Array(tris) })
+  let solid = new mf.Manifold(m)
+  if (solid.status() != 'NoError') {
+    solid.delete()
+    m.merge()
+    solid = new mf.Manifold(m)
+  }
+  if (solid.status() != 'NoError') throw new Error(`triangulated solid is not a manifold (${solid.status()})`)
+  return solid
+}
+
+/** A Manifold's triangles as a TriMesh. */
+export function manifoldMesh(solid: Manifold): TriMesh {
+  const m = solid.getMesh()
+  const n = m.numProp
+  const positions = new Float32Array((m.vertProperties.length / n) * 3)
+  for (let i = 0; i < positions.length / 3; i++) {
+    positions[3 * i] = m.vertProperties[n * i]
+    positions[3 * i + 1] = m.vertProperties[n * i + 1]
+    positions[3 * i + 2] = m.vertProperties[n * i + 2]
+  }
+  return { positions, indices: Uint32Array.from(m.triVerts) }
+}
+
+/**
+ * Internal voids thinner than this (mean thickness, mm) are filled after a
+ * union. They are the float-noise gaps between solids that Cosmos builds face
+ * to face; on the reference designs the thickest is 0.005 mm.
+ */
+export const VOID_FILL_MM = 0.01
+
+export interface Fused {
+  manifold: Manifold
+  mesh: TriMesh
+  /** Solids that went into the union. */
+  solids: number
+  /** Internal voids filled after the union, and their total volume (mm^3, negative). */
+  voidsFilled: number
+  voidVolume: number
+  /** Connected components left. */
+  components: number
+  volume: number
+  genus: number
+  /** Time spent triangulating the solids, and in the union and clean-up. */
+  ms: { mesh: number; union: number }
+}
+
+/** Union of every solid of `shapes`, triangulated with `opts` (the shapes are not consumed). */
+export function fuseShapes(mf: ManifoldToplevel, shapes: AnyShape[], opts: MeshOptions): Fused {
+  const t0 = performance.now()
+  const solids = shapes.flatMap(s => solidsOf(s))
+  const parts = solids.map(s => toManifold(mf, shapeMesh(s, opts)))
+  const t1 = performance.now()
+  const union = mf.Manifold.union(parts)
+  parts.forEach(p => p.delete())
+  if (union.status() != 'NoError') throw new Error(`Manifold union failed (${union.status()})`)
+  const pieces = union.decompose()
+  union.delete()
+  const isVoid = (c: Manifold) => {
+    const v = c.volume()
+    return v < 0 && (2 * -v) / c.surfaceArea() < VOID_FILL_MM
+  }
+  const voids = pieces.filter(isVoid)
+  const kept = pieces.filter(c => !isVoid(c))
+  const manifold = mf.Manifold.compose(kept)
+  const voidVolume = voids.reduce((v, c) => v + c.volume(), 0)
+  pieces.forEach(p => p.delete())
+  const mesh = manifoldMesh(manifold)
+  return {
+    manifold,
+    mesh,
+    solids: solids.length,
+    voidsFilled: voids.length,
+    voidVolume,
+    components: kept.length,
+    volume: manifold.volume(),
+    genus: manifold.genus(),
+    ms: { mesh: Math.round(t1 - t0), union: Math.round(performance.now() - t1) },
+  }
+}
+
 /** STEP file of named shapes, as an assembly (the shapes are not consumed). */
 export async function stepFile(parts: { name: string; shape: AnyShape }[]): Promise<Uint8Array> {
   const assembly = new Assembly()
@@ -144,6 +281,29 @@ function placedGeometry(geometry: BufferGeometry, matrix: Matrix4): TriMesh {
 
 const ROT_Z_180 = new Matrix4().makeRotationZ(Math.PI)
 
+/** A mesh's vertices in the frame `pose` maps from (e.g. a key's switch frame). */
+export function inFrame(mesh: TriMesh, pose: Matrix4): Float32Array {
+  const inverse = pose.clone().invert()
+  const out = new Float32Array(mesh.positions.length)
+  const v = new Vector3()
+  for (let i = 0; i < out.length; i += 3) {
+    v.set(mesh.positions[i], mesh.positions[i + 1], mesh.positions[i + 2]).applyMatrix4(inverse)
+    out[i] = v.x
+    out[i + 1] = v.y
+    out[i + 2] = v.z
+  }
+  return out
+}
+
+/** Cosmos's switch model for key `i`, in the half frame, turned as Cosmos's viewer turns it. */
+export async function switchMesh(ctx: HalfContext, i: number): Promise<TriMesh | null> {
+  const key = ctx.conf.keys[i]
+  const part = await partGeometry(key.type, key.variant)
+  if (!part) return null
+  const pose = partMatrix(ctx.geo.keyHolesTrsfs[i], ctx.half, ctx.side)
+  return placedGeometry(part, pose.multiply(partFlipped(key) ? ROT_Z_180 : new Matrix4()))
+}
+
 /**
  * Switches and keycaps at rest, placed with the same poses as the spec,
  * using Cosmos's own part and keycap models.
@@ -158,8 +318,8 @@ export async function switchAndKeycapMeshes(ctx: HalfContext) {
     if (!isSpecKey(key)) continue
     const pose = partMatrix(geo.keyHolesTrsfs[i], half, side)
     try {
-      const part = await partGeometry(key.type, key.variant)
-      if (part) switches.push(placedGeometry(part, pose.clone().multiply(partFlipped(key) ? ROT_Z_180 : new Matrix4())))
+      const part = await switchMesh(ctx, i)
+      if (part) switches.push(part)
     } catch (e) {
       missing.add(`switch model for ${key.type}: ${(e as Error).message}`)
     }
@@ -212,4 +372,3 @@ export function signedVolume(mesh: TriMesh) {
   }
   return v / 6
 }
-

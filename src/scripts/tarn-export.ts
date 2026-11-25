@@ -7,14 +7,16 @@
  * <design> is a Cosmos URL (https://ryanis.cool/cosmos/beta#cm:...), its hash
  * part (cm:..., with or without '#'), or a file containing either.
  *
- * Writes <outdir>/spec.json (tarnSpec 0.1) and, per half, <outdir>/<side>/:
- *   case.step, case.stl      walls + web + switch holders + screw attachments
+ * Writes <outdir>/spec.json (tarnSpec 0.2) and, per half, <outdir>/<side>/:
+ *   case.step                walls + web + switch holders + screw attachments, as separate named solids
+ *   case.stl                 the same parts fused into one manifold solid
  *   plate.step, plate.stl    bottom plate
  *   holder.step, holder.stl  microcontroller holder (when the design has one)
  *   assembly.step            every case part as a named assembly (what Cosmos's STEP download holds)
  *   switches.stl, keycaps.stl  Cosmos's switch and keycap models at rest, in position
  *   render-{top,front,iso}.png
- * plus <outdir>/export.json with timings, warnings and Cosmos's own design checks.
+ * plus <outdir>/export.json with timings, warnings, Cosmos's own design checks,
+ * the fused-solid statistics, the harness seat check and the retention report.
  *
  * Exit status: 0 on success, 1 on failure, 2 on bad arguments, 3 when the
  * outputs were written but Cosmos reports errors (e.g. colliding keycaps).
@@ -123,14 +125,34 @@ async function main() {
     for (const r of results) console.log(`  ${r.severity}: ${r.message}`)
   }
 
+  // Spec 0.2 declares a socket backstop and an island clamp per key (ADR 0006 item 7). This
+  // exporter does not build them yet, so report every switch key that lacks them.
+  const switchKeys = spec.halves.flatMap(h => h.keys.filter(k => k.switch != 'other'))
+  const retention = Object.fromEntries((['backstop', 'clamp'] as const).map(kind => {
+    const missing = switchKeys.filter(k => !k[kind]).map(k => k.id)
+    return [kind, { declared: switchKeys.length - missing.length, missing }]
+  }))
+  for (const [kind, r] of Object.entries(retention)) {
+    if (r.missing.length) warnings.push(`${kind}: missing on ${r.missing.length} of ${switchKeys.length} switch keys (ADR 0006 item 7; not built yet)`)
+  }
+  const unrotated = switchKeys.filter(k => k.switchRotation == null).map(k => k.id)
+  if (unrotated.length) warnings.push(`switchRotation unknown for ${unrotated.length} keys (switch model orientation not measured): ${unrotated.slice(0, 5).join(', ')}`)
+  const fused: Record<string, any> = {}
+  const harnessSeat: Record<string, any> = {}
+  const rotationCheck: Record<string, { checked: number; landed: number; worstOffsetMm: number; misses: string[] }> = {}
+
   if (!opts.specOnly) {
     const tSetup = performance.now()
     const { setup } = await import('../model_gen/node-model')
     await setup()
     timings.openCascadeSetupMs = Math.round(performance.now() - tSetup)
     const solids = await import('$lib/tarn/solids')
+    const { measureSeats, poseMatrix } = await import('$lib/tarn/seat')
+    const { matchContacts, switchFacts } = await import('$lib/tarn/harness')
+    const { isSpecKey } = await import('$lib/tarn/spec')
     const { render, VIEWS } = await import('$lib/tarn/render')
     const meshOpts = { tolerance: opts.tolerance, angularTolerance: opts.angular }
+    const mf = await solids.manifoldKernel()
 
     for (const ctx of contexts) {
       if (!opts.sides.includes(ctx.side)) continue
@@ -161,13 +183,63 @@ async function main() {
         if (parts.holder) out('holderStep', 'holder.step', step(await solids.stepFile([{ name: 'Microcontroller Holder', shape: parts.holder }])))
       })
 
-      const meshes = await timed('meshing', () => ({
-        body: solids.mergeMeshes(parts.body.map(p => solids.shapeMesh(p.shape, meshOpts))),
-        plate: parts.plate ? solids.shapeMesh(parts.plate, meshOpts) : null,
-        holder: parts.holder ? solids.shapeMesh(parts.holder, meshOpts) : null,
+      // Each part's solids fused into one manifold (Manifold union); the STEP files keep them apart.
+      const fuse = await timed('fuse', () => ({
+        body: solids.fuseShapes(mf, parts.body.map(p => p.shape), meshOpts),
+        plate: parts.plate ? solids.fuseShapes(mf, [parts.plate], meshOpts) : null,
+        holder: parts.holder ? solids.fuseShapes(mf, [parts.holder], meshOpts) : null,
       }))
+      fused[ctx.side] = Object.fromEntries(
+        Object.entries({ case: fuse.body, plate: fuse.plate, holder: fuse.holder }).filter(([, f]) => f).map(([name, f]) => [name, {
+          solids: f!.solids,
+          components: f!.components,
+          volumeMm3: Math.round(f!.volume * 1000) / 1000,
+          genus: f!.genus,
+          voidsFilled: f!.voidsFilled,
+          voidVolumeMm3: Math.round(f!.voidVolume * 1e6) / 1e6,
+          ms: f!.ms,
+        }]),
+      )
+      for (const [name, f] of Object.entries(fused[ctx.side]) as [string, any][]) {
+        if (f.components != 1) warnings.push(`${ctx.side}: fused ${name} has ${f.components} components, not 1`)
+      }
+      const meshes = { body: fuse.body.mesh, plate: fuse.plate?.mesh ?? null, holder: fuse.holder?.mesh ?? null }
+
+      // Harness seats: the clear box under every switch, and the planned stack against the case.
+      const obstacles = mf.Manifold.union([fuse.body.manifold, ...(fuse.plate ? [fuse.plate.manifold] : []), ...(fuse.holder ? [fuse.holder.manifold] : [])])
+      const seats = await timed('harnessSeat', () => measureSeats(mf, ctx, half, obstacles))
+      obstacles.delete()
+      for (const f of [fuse.body, fuse.plate, fuse.holder]) f?.manifold.delete()
+      harnessSeat[ctx.side] = seats
+      for (const [t, n] of Object.entries(seats.fits)) {
+        const onPlate = seats.fitsWithStiffenerOnPlate[t]
+        console.log(`${ctx.side}: harness stack with a ${t} mm stiffener fits under ${n} of ${seats.keys.length} switches (${onPlate} with the stiffener cut back to the plate)`)
+        if (n < seats.keys.length) warnings.push(`${ctx.side}: the planned harness stack (${t} mm stiffener) does not fit under ${seats.keys.length - n} switches (harnessSeat in export.json)`)
+      }
+
       const placed = await timed('switchesAndKeycaps', () => solids.switchAndKeycapMeshes(ctx))
       warnings.push(...placed.missing.map(m => `${ctx.side}: no ${m}`))
+
+      // switchRotation self-check: the datasheet contacts, turned by switchRotation, land on the pins of the switch model written to switches.stl.
+      rotationCheck[ctx.side] = await timed('switchRotationCheck', async () => {
+        const confIndex = ctx.conf.keys.flatMap((k, i) => (isSpecKey(k) ? [i] : []))
+        const result = { checked: 0, landed: 0, worstOffsetMm: 0, misses: [] as string[] }
+        for (const [n, key] of half.keys.entries()) {
+          const facts = switchFacts(key.switch)
+          if (!facts || key.switchRotation == null) continue
+          const mesh = await solids.switchMesh(ctx, confIndex[n]).catch(() => null)
+          if (!mesh) continue
+          const matches = matchContacts(solids.inFrame(mesh, poseMatrix(key.pose)), facts, key.switchRotation)
+          result.checked++
+          if (matches.every(m => m.lands)) result.landed++
+          else result.misses.push(key.id)
+          for (const m of matches) result.worstOffsetMm = Math.max(result.worstOffsetMm, Math.round((m.found?.offsetMm ?? Infinity) * 1000) / 1000)
+        }
+        return result
+      })
+      if (rotationCheck[ctx.side].misses.length) {
+        warnings.push(`${ctx.side}: switchRotation does not put the datasheet contacts on the switch model's pins for ${rotationCheck[ctx.side].misses.join(', ')}`)
+      }
       await timed('stlFiles', () => {
         out('caseStl', 'case.stl', solids.binarySTL(meshes.body))
         if (meshes.plate) out('plateStl', 'plate.stl', solids.binarySTL(meshes.plate))
@@ -203,7 +275,22 @@ async function main() {
   timings.totalMs = Math.round(performance.now() - t0)
   writeFileSync(
     join(opts.outDir, 'export.json'),
-    JSON.stringify({ design: opts.design, commit: spec.source.commit, options: { ...opts, design: undefined, outDir: undefined }, timings, warnings, cosmosChecks: checks }, null, 2) + '\n',
+    JSON.stringify(
+      {
+        design: opts.design,
+        commit: spec.source.commit,
+        options: { ...opts, design: undefined, outDir: undefined },
+        timings,
+        warnings,
+        cosmosChecks: checks,
+        fused,
+        switchRotationCheck: rotationCheck,
+        harnessSeat,
+        retention,
+      },
+      null,
+      2,
+    ) + '\n',
   )
   for (const w of warnings) console.warn(`warning: ${w}`)
   console.log(`done in ${(timings.totalMs / 1000).toFixed(1)} s`)

@@ -1,5 +1,5 @@
 /**
- * Tarn spec export: turns a Cosmos design into a Tarn spec (tarnSpec 0.1).
+ * Tarn spec export: turns a Cosmos design into a Tarn spec (tarnSpec 0.2).
  *
  * This module is pure geometry. It never loads OpenCascade, so the spec can be
  * produced quickly even where the CAD kernel is unavailable. The frame
@@ -21,6 +21,9 @@
  *   key's own frame (M * T * M with M = diag(-1, 1, 1)). That is the same flip
  *   Cosmos applies to the switch holders before mirroring them, so the pose is
  *   the physical (proper) pose of the switch that sits in the left case.
+ * - Datasheet frame and switchRotation: see harness.ts. switchRotation is the
+ *   same on both halves, because the left pose already describes an unmirrored
+ *   switch.
  */
 
 import { boardElements, convertToCustomConnectors } from '$lib/geometry/microcontrollers'
@@ -31,8 +34,10 @@ import { type CosmosCluster, type CosmosKeyboard, fromCosmosConfig, getRowColumn
 import Trsf from '$lib/worker/modeling/transformation'
 import { Matrix4 } from 'three/src/math/Matrix4.js'
 import { deserialize } from '../../routes/beta/lib/serialize'
+import { type Box3, partFlipped, type SpecSeat, specSeat, switchRotation } from './harness'
 
-export const TARN_SPEC_VERSION = '0.1'
+export const TARN_SPEC_VERSION = '0.2'
+export { partFlipped }
 export type Side = 'left' | 'right'
 export const SIDES: Side[] = ['left', 'right']
 
@@ -48,6 +53,26 @@ export interface SpecKey {
   keycap: { profile: string; widthU: number; heightU: number; row: string } | null
   label: string | null
   pose: Pose
+  /** Degrees about the switch frame's +Z from the datasheet frame to the switch as placed (harness.ts). null for 'other'. */
+  switchRotation: number | null
+  /** Room under the switch for the harness island, in the switch frame. null for 'other'. */
+  seat: SpecSeat | null
+  /** Declared by spec 0.2 (ADR 0006 item 7). This exporter builds neither yet. */
+  backstop?: Retainer
+  clamp?: Retainer
+}
+
+/** A case feature that holds the harness at one key. */
+export interface Retainer {
+  kind: string
+  /** z (switch frame) of the face that bears on the socket body (backstop) or on the island (clamp). */
+  bearingZ: number
+  /** The region it occupies, switch frame. */
+  region: Box3
+  /** Force it is sized for, N. */
+  designLoadN: number
+  /** Output (e.g. caseStl) whose solid contains it. */
+  part: string
 }
 
 export interface SpecHalf {
@@ -102,9 +127,9 @@ export function decodeDesign(input: string): CosmosKeyboard {
 
 /** Build the per-side Cosmos configurations exactly as the Cosmos app does before a download. */
 export function cosmosHalves(cosmos: CosmosKeyboard): Record<Side, Cuttleform> {
-  if (cosmos.unibody) throw new Error('Unibody designs are not supported by tarnSpec 0.1 (it has left and right halves only)')
+  if (cosmos.unibody) throw new Error(`Unibody designs are not supported by tarnSpec ${TARN_SPEC_VERSION} (it has left and right halves only)`)
   const full: FullCuttleform = fromCosmosConfig(cosmos)
-  if (full.center) throw new Error('Designs with a centre piece are not supported by tarnSpec 0.1')
+  if (full.center) throw new Error(`Designs with a centre piece are not supported by tarnSpec ${TARN_SPEC_VERSION}`)
   if (!full.left || !full.right) throw new Error('The design must have both a left and a right half')
   // Cosmos's download dialog puts both halves at the same height before exporting.
   setBottomZ(full)
@@ -223,12 +248,6 @@ function specKeycap(key: CuttleKey): SpecKey['keycap'] {
   }
 }
 
-/** Cosmos rotates some socket variants 180 degrees about Z in its viewer (e.g. LED north vs south). */
-export function partFlipped(key: CuttleKey) {
-  const info = PART_INFO[key.type]
-  return 'flipPart' in info && !!info.flipPart?.(key.variant || {})
-}
-
 /** Distance from the switch frame origin (plate top) to the bottom of the keycap, as Cosmos places it. */
 export function keycapSeat(key: CuttleKey) {
   return switchInfo(key.type).height
@@ -257,15 +276,18 @@ export function specHalf(cosmos: CosmosKeyboard, ctx: HalfContext): SpecHalf {
   const keys: SpecKey[] = []
   conf.keys.forEach((key, i) => {
     if (!isSpecKey(key)) return
+    const family = switchFamily(key)
     keys.push({
       id: ids[i],
       cluster: key.cluster,
       ...logicalPosition(key),
-      switch: switchFamily(key),
+      switch: family,
       socket: key.type,
       keycap: specKeycap(key),
       label: 'keycap' in key && key.keycap?.letter ? key.keycap.letter : null,
       pose: partPose(trsfs[i], half, side),
+      switchRotation: switchRotation(key, family),
+      seat: specSeat(key, family),
     })
   })
 
