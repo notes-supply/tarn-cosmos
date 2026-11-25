@@ -634,7 +634,12 @@ export function islandSolids(): { name: string; shape: Shape3D }[] {
   return islandEnvelope().map(p => {
     let pen = draw(p.outline[0])
     for (const q of p.outline.slice(1)) pen = pen.lineTo(q)
-    return { name: p.name, shape: pen.close().sketchOnPlane('XY', p.zMin).extrude(p.zMax - p.zMin) as Shape3D }
+    let shape = pen.close().sketchOnPlane('XY', p.zMin).extrude(p.zMax - p.zMin) as Shape3D
+    // The stiffener and flex have the bosses' holes (ø3.2, ADR 0011), as the spacer has.
+    if (p.name == 'stiffener' || p.name == 'flex') {
+      for (const c of CONTACTS) shape = shape.cut(makeCylinder(1.6, p.zMax - p.zMin + 1, [c[0], c[1], p.zMin - 0.5], [0, 0, 1]))
+    }
+    return { name: p.name, shape }
   })
 }
 

@@ -95,8 +95,9 @@ export function socketCloseups(mf: ManifoldToplevel, input: CloseupInput, size =
   local.delete()
   region.delete()
   // The printed spacer (the case under the clip relief, between its faces) in its own colour.
-  const r = CLIP_RELIEF / 2
-  const spacerBox = mf.Manifold.cube([2 * r, 2 * r, SPACER_TOP - SPACER_BOTTOM]).translate([-r, -r, SPACER_BOTTOM])
+  // The box reaches a little past the spacer's faces, so no face of it lies in one of the case's.
+  const r = CLIP_RELIEF / 2 - 0.02
+  const spacerBox = mf.Manifold.cube([2 * r, 2 * r, SPACER_TOP - SPACER_BOTTOM + 0.1]).translate([-r, -r, SPACER_BOTTOM - 0.05])
   const spacerLocal = caseRegion.intersect(spacerBox)
   const caseLocal = caseRegion.subtract(spacerBox)
   caseRegion.delete()
@@ -130,7 +131,7 @@ export function socketCloseups(mf: ManifoldToplevel, input: CloseupInput, size =
       } else {
         mesh = manifoldMesh(solid)
       }
-      if (mesh.indices.length) out.push({ mesh, color: CLOSEUP_COLORS[name] ?? [200, 0, 200] })
+      if (mesh.indices.length) out.push({ mesh, color: CLOSEUP_COLORS[name.startsWith('socket boss') ? 'hotswap socket' : name] ?? [200, 0, 200] })
     }
     if (open) {
       for (const [name, mesh] of [['switch', switchLocal], ['keycap', keycapLocal]] as const) {
