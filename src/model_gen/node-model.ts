@@ -24,14 +24,24 @@ process.env.GLB_URLS = JSON.stringify(Object.fromEntries(
 ))
 process.env.FS = 'fs/promises'
 
+let loaded: Promise<void> | undefined
+
+/**
+ * Load OpenCascade once per process. Shapes Cosmos caches (cacher.ts) belong to
+ * the instance that made them, so a second instance (e.g. a second test file
+ * calling setup) would fail on them.
+ */
 export async function setup() {
-  // @ts-ignore
-  const oc = await loadOC({
-    locateFile: () => 'src/assets/replicad_single.wasm',
-    print: () => {},
-    printErr: () => {},
-  })
-  setOC(oc)
+  loaded ??= (async () => {
+    // @ts-ignore
+    const oc = await loadOC({
+      locateFile: () => 'src/assets/replicad_single.wasm',
+      print: () => {},
+      printErr: () => {},
+    })
+    setOC(oc)
+  })()
+  await loaded
 }
 
 export type Part = 'walls' | 'web' | 'holes' | 'inserts' | 'plate'

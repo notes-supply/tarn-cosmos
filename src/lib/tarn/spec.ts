@@ -1,5 +1,5 @@
 /**
- * Tarn spec export: turns a Cosmos design into a Tarn spec (tarnSpec 0.2).
+ * Tarn spec export: turns a Cosmos design into a Tarn spec (tarnSpec 0.3).
  *
  * This module is pure geometry. It never loads OpenCascade, so the spec can be
  * produced quickly even where the CAD kernel is unavailable. The frame
@@ -24,6 +24,12 @@
  * - Datasheet frame and switchRotation: see harness.ts. switchRotation is the
  *   same on both halves, because the left pose already describes an unmirrored
  *   switch.
+ * - Island frame (spec 0.3 `island.pose`, Tarn sockets only): the datasheet
+ *   frame moved down to the top face of the island's FR4 stiffener, i.e.
+ *   pose · Rz(switchRotation) · T(0, 0, stiffenerTopZ) with stiffenerTopZ the
+ *   switch housing's underside (-2.2 for Choc). The island is the same outline
+ *   in it on every key; `variant` only says which way the socket's posts are
+ *   turned.
  */
 
 import { boardElements, convertToCustomConnectors } from '$lib/geometry/microcontrollers'
@@ -35,9 +41,10 @@ import Trsf from '$lib/worker/modeling/transformation'
 import { Matrix4 } from 'three/src/math/Matrix4.js'
 import { deserialize } from '../../routes/beta/lib/serialize'
 import { type Box3, partFlipped, type SpecSeat, specSeat, switchRotation } from './harness'
-import { retainers, SOCKET_ID } from './socket'
+import { ANTENNA, BATTERY_BAY, batterySpace, CELLS, leadPath, RF_CLEARANCE } from './mcu'
+import { type IslandSpec, islandSpecFields, retainers, SOCKET_ID, STIFFENER_TOP } from './socket'
 
-export const TARN_SPEC_VERSION = '0.2'
+export const TARN_SPEC_VERSION = '0.3'
 export { partFlipped }
 export type Side = 'left' | 'right'
 export const SIDES: Side[] = ['left', 'right']
@@ -61,6 +68,25 @@ export interface SpecKey {
   /** Declared by spec 0.2 (ADR 0006 item 7). The Tarn socket (choc-v2-tarn, socket.ts) has both; Cosmos's own sockets have neither. */
   backstop?: Retainer
   clamp?: Retainer
+  /** Spec 0.3: where the harness island goes at a Tarn socket key (island frame above). Absent for other sockets. */
+  island?: SpecIsland
+}
+
+export interface SpecIsland extends IslandSpec {
+  /** Island frame to half frame, row-major. */
+  pose: Pose
+}
+
+/** The island frame of a key: its pose turned by switchRotation and moved down to the stiffener top. */
+export function islandMatrix(pose: Pose, switchRotation: number): Matrix4 {
+  return new Matrix4()
+    .set(...(pose as [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number]))
+    .multiply(new Matrix4().makeRotationZ((switchRotation * Math.PI) / 180))
+    .multiply(new Matrix4().makeTranslation(0, 0, STIFFENER_TOP))
+}
+
+function specIsland(pose: Pose, switchRotation: number): SpecIsland {
+  return { pose: rowMajor(islandMatrix(pose, switchRotation)), ...islandSpecFields(switchRotation) }
 }
 
 /** A case feature that holds the harness at one key. */
@@ -82,8 +108,23 @@ export interface SpecHalf {
   microcontroller: { type: string; pose: Pose } | null
   connectors: { type: string; pose: Pose }[]
   screws: { type: string; pose: Pose }[]
+  /** Spec 0.3: regions other parts must stay out of (points within clearanceMm of box, in the frame of pose). */
+  reserved: SpecReserved[]
+  /** Spec 0.3: the cell the battery bay is for. */
+  battery: { cell: string; sizeMm: [number, number, number]; bay: number; connector: string } | null
   outputs: Record<string, string>
 }
+
+export interface SpecReserved {
+  kind: 'antenna' | 'battery' | 'battery lead'
+  pose: Pose
+  box: { min: [number, number, number]; max: [number, number, number] }
+  clearanceMm: number
+  description: string
+}
+
+/** The Cosmos board whose outline Tarn's MCU board (tarn-mcu-v1) uses (ADR 0010). */
+export const TARN_MCU = 'lemon-wireless'
 
 export interface TarnSpec {
   tarnSpec: string
@@ -278,6 +319,7 @@ export function specHalf(cosmos: CosmosKeyboard, ctx: HalfContext): SpecHalf {
   conf.keys.forEach((key, i) => {
     if (!isSpecKey(key)) return
     const family = switchFamily(key)
+    const pose = partPose(trsfs[i], half, side)
     keys.push({
       id: ids[i],
       cluster: key.cluster,
@@ -286,19 +328,17 @@ export function specHalf(cosmos: CosmosKeyboard, ctx: HalfContext): SpecHalf {
       socket: key.type,
       keycap: specKeycap(key),
       label: 'keycap' in key && key.keycap?.letter ? key.keycap.letter : null,
-      pose: partPose(trsfs[i], half, side),
+      pose,
       switchRotation: switchRotation(key, family),
       seat: specSeat(key, family),
-      ...(key.type == SOCKET_ID ? retainers(switchRotation(key, family)!) : {}),
+      ...(key.type == SOCKET_ID ? { ...retainers(switchRotation(key, family)!), island: specIsland(pose, switchRotation(key, family)!) } : {}),
     })
   })
 
   const connOrigin = geo.connectorOrigin
-  let microcontroller: SpecHalf['microcontroller'] = null
-  if (conf.microcontroller && connOrigin) {
-    const board = boardElements(conf, false)[0]
-    microcontroller = { type: conf.microcontroller, pose: partPose(connOrigin.pretranslated(board.offset.xyz()), half, side) }
-  }
+  const mcu = microcontrollerMatrix(ctx)
+  const microcontroller: SpecHalf['microcontroller'] = mcu ? { type: conf.microcontroller!, pose: rowMajor(mcu) } : null
+  const { reserved, battery } = mcu && conf.microcontroller == TARN_MCU ? mcuReserved(side, rowMajor(mcu)) : { reserved: [], battery: null }
 
   const connectors: SpecHalf['connectors'] = []
   if (connOrigin) {
@@ -312,7 +352,38 @@ export function specHalf(cosmos: CosmosKeyboard, ctx: HalfContext): SpecHalf {
   const screwType = `${conf.screwSize} ${conf.screwType}`
   const screws = geo.screwPositions.map(t => ({ type: screwType, pose: partPose(t, half, side) }))
 
-  return { side, keys, microcontroller, connectors, screws, outputs: {} }
+  return { side, keys, microcontroller, connectors, screws, reserved, battery, outputs: {} }
+}
+
+/** The microcontroller board's frame in the half frame (the spec's microcontroller pose), or null. */
+export function microcontrollerMatrix(ctx: HalfContext, geo: Geometry = ctx.geo): Matrix4 | null {
+  const connOrigin = geo.connectorOrigin
+  if (!ctx.conf.microcontroller || !connOrigin) return null
+  const board = boardElements(ctx.conf, false)[0]
+  return partMatrix(connOrigin.pretranslated(board.offset.xyz()), ctx.half, ctx.side)
+}
+
+/** Spec 0.3 reserved regions and battery of a half with Tarn's MCU board (mcu.ts), in the board frame. */
+function mcuReserved(side: Side, pose: Pose): { reserved: SpecReserved[]; battery: SpecHalf['battery'] } {
+  const reserved: SpecReserved[] = [
+    {
+      kind: 'antenna',
+      pose,
+      box: ANTENNA,
+      clearanceMm: RF_CLEARANCE,
+      description: 'NINA-B306 PCB antenna keep-out, board top to module top; keep plastic, metal, cells and harness copper this far away (u-blox NINA-B3 SIM R15 §3.3.3)',
+    },
+    {
+      kind: 'battery',
+      pose,
+      box: batterySpace(side),
+      clearanceMm: 0,
+      description: `battery bay: a ${BATTERY_BAY.cell} pouch cell on its long edge in a cradle on the bottom plate, with 1 mm on its thickness, 1 mm on its width and 2 mm on its length`,
+    },
+    ...leadPath(side).map(box => ({ kind: 'battery lead' as const, pose, box, clearanceMm: 0, description: 'the battery lead from the cradle slot to J3' })),
+  ]
+  const [t, w, l] = CELLS[BATTERY_BAY.cell]
+  return { reserved, battery: { cell: BATTERY_BAY.cell, sizeMm: [t, w, l], bay: 1, connector: 'J3, JST PH 2-pin (S2B-PH-SM4-TB) on tarn-mcu-v1; a pre-terminated JST PH lead' } }
 }
 
 export function buildSpec(input: string, commit: string | null) {

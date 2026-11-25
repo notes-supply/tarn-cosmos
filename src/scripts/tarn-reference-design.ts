@@ -13,6 +13,7 @@
 
 import { microcontrollerConnectors } from '$lib/geometry/microcontrollers'
 import { encodeVariant } from '$lib/geometry/socketsParts'
+import { OVERMOLD, SEAT_HEIGHT, USB } from '$lib/tarn/mcu'
 import { SOCKET_ID } from '$lib/tarn/socket'
 import { decodeDesign } from '$lib/tarn/spec'
 import { decodeTuple, encodeTuple } from '$lib/worker/config'
@@ -38,6 +39,22 @@ const column = (cl: CosmosCluster, col: number) => cl.clusters.find(c => c.colum
 function move(cl: CosmosCluster, [dx, dy, dz]: [number, number, number]) {
   const [x, y, z, a] = cl.position ? decodeTuple(cl.position) : [0, 0, 0, 0]
   cl.position = encodeTuple([x + Math.round(dx * 10), y + Math.round(dy * 10), z + Math.round(dz * 10), a])
+}
+
+/** Keywell height off the floor (Cosmos verticalClearance). */
+const VERTICAL_CLEARANCE = 3
+/**
+ * The USB opening: OVERMOLD.max plus OVERMOLD.margin a side, centred on the
+ * receptacle face (x 6, z 3.23 in the board frame; Cosmos's connector y is
+ * measured from the holder floor, SEAT_HEIGHT below the board), rounded to
+ * Cosmos's 0.1 mm encoding.
+ */
+const USB_OPENING = {
+  x: USB.faceCentre[0],
+  y: Math.round((USB.faceCentre[2] + SEAT_HEIGHT) * 10) / 10,
+  width: OVERMOLD.max[0] + 2 * OVERMOLD.margin,
+  height: Math.round((OVERMOLD.max[1] + 2 * OVERMOLD.margin) * 10) / 10,
+  radius: 1,
 }
 
 const WEST = encodeVariant(SOCKET_ID as any, { island: 'Island West' })
@@ -97,10 +114,11 @@ export const CHANGES: Change[] = [
   {
     what: 'verticalClearance',
     from: '0.1 mm',
-    to: '1 mm',
-    why: 'Lifts the keywell 0.9 mm off the floor so the keeper of thumbs-c2-r0 can come in over the screw boss under it.',
+    to: `${VERTICAL_CLEARANCE} mm`,
+    why:
+      "Lifts the keywell off the floor: 0.9 mm so the keeper of thumbs-c2-r0 can come in over the screw boss under it, and 2 mm more so the sockets and keepers over the right half's MCU antenna stay 10 mm from it (u-blox NINA-B3 SIM R15 §3.3.3; src/lib/tarn/mcu.ts).",
     apply: c => {
-      c.verticalClearance = 1
+      c.verticalClearance = VERTICAL_CLEARANCE
     },
   },
   {
@@ -113,6 +131,16 @@ export const CHANGES: Change[] = [
       const { connectors, mirrorConnectors } = microcontrollerConnectors(c.microcontroller, c.connectors)
       c.connectors = connectors
       c.mirrorConnectors = mirrorConnectors
+    },
+  },
+  {
+    what: 'USB-C opening in the rear wall',
+    from: "Cosmos's average USB preset, 12 x 7 mm, corner radius 3",
+    to: `${USB_OPENING.width} x ${USB_OPENING.height} mm, corner radius ${USB_OPENING.radius}, centred on the receptacle (custom connector)`,
+    why:
+      'A USB-C cable overmold must reach the receptacle face to seat, and the rear wall is 4.1 mm thick with its inner face at that face. The opening takes overmolds up to 13 x 7.5 mm with 0.4 mm a side (the tested Same Sky CBL-40-UC-UC-1 is 12.35 x 6.5 mm). src/lib/tarn/mcu.ts OVERMOLD.',
+    apply: c => {
+      c.connectors = c.connectors.map(k => (k.preset == 'usb' ? { ...USB_OPENING } : k))
     },
   },
   {

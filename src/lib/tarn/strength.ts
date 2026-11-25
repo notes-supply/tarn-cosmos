@@ -1,11 +1,12 @@
 /**
  * Hand calculation of the Tarn socket's backstop (socket.ts) under the switch
- * insertion force: where the force goes, and the stress in each part of the
- * path. It is a first-order check, not a finite-element model:
+ * insertion force: where the force goes, the stress in each part of the path,
+ * how far the path gives, and the torque the adjuster takes to set. It is a
+ * first-order check, not a finite-element model:
  *
- * - Load: LOADS.insertionN (30 N, Kailh's 3 kgf maximum mating force [K-S30]),
- *   split equally between the two switch contacts. It acts on the hotswap
- *   socket, which bears on the keeper.
+ * - Load: LOADS.insertionN (30 N, Kailh's 3 kgf maximum mating force [K-S30]).
+ *   It pushes the hotswap socket onto the adjuster's pad, which carries it
+ *   through its thread into the keeper.
  * - The keeper is rigid and rests on its tongues. The tongues bear on the
  *   window floors, which are elastic supports of equal stiffness, so the
  *   reactions follow a plane (a + b x + c y); a negative reaction would mean
@@ -13,22 +14,47 @@
  * - Each reaction then passes through: the tongue (shear and bending at its
  *   root), the window floor (a beam fixed at both ends of the window), and the
  *   post at the window, in tension with the bending from the reaction's offset
- *   in the post. The keeper plate itself is checked as a beam between the -Y
- *   tongues and the P3a tongue.
- * - Print directions: the keeper prints flat, so its stresses are in the layer
- *   plane. The case prints upright (open side down), so a post hanging from the
- *   plate is pulled across its layers; the window floor bends along the layers.
+ *   in the post. The keeper plate is checked as a beam between the -Y tongues
+ *   and the P3a tongue, at its section through the adjuster's thread.
+ * - Print directions: the keeper prints flat and the adjuster knob down, so the
+ *   keeper's stresses are in the layer plane and the adjuster's are across its
+ *   layers. The case prints upright (open side down), so a post hanging from
+ *   the plate is pulled across its layers; the window floor bends along them.
  *
  * Strengths are conservative round numbers for FDM PLA or PETG, **unverified**
  * (they depend on the printer, material and settings): in-layer tension and
  * bending 40 MPa, across layers 15 MPa, shear 10 MPa. The check asks for a
- * safety factor of at least MIN_SAFETY on each.
+ * safety factor of at least MIN_SAFETY on each. The stiffness and friction
+ * values below are **unverified** too.
+ *
+ * Why a screw and not a spring. The socket's contacts grip the pins with up to
+ * the mating force. A sprung backstop that has to close the gap must push the
+ * island up harder than that at every point of the stack tolerance: at least
+ * 30 N over 1.2 mm of travel (PAD_RANGE), after the 30 N of each insertion has
+ * pushed it down. Otherwise the island stops wherever the pins' grip balances
+ * the spring, below the housing. flexureLimit() shows that a printed flexure
+ * under the island gives about a newton at most with that travel; a printed
+ * spring also creeps under a constant load. The screw has no travel under
+ * load: it is set once against the switch housing, and a thread that
+ * self-locks does not turn back under 30 N.
  */
 
-import { CONTACTS, KEEPER_PARTS, KEEPER_THICKNESS, KEEPER_TONGUES, LOADS, POST_FOOT, POSTS, TONGUE, WINDOW } from './socket'
+import { ADJUSTER, ISLAND, KEEPER_BOTTOM, KEEPER_PARTS, KEEPER_THICKNESS, KEEPER_TONGUES, KEEPER_TOP, LEDGE_Z, LOADS, PAD_RANGE, POST_FOOT, POSTS, TONGUE, WINDOW } from './socket'
 
 export const STRENGTH_MPA = { inLayer: 40, acrossLayers: 15, shear: 10 } as const
 export const MIN_SAFETY = 2
+/**
+ * Elastic modulus for deflection: 2 GPa, a conservative round number for
+ * printed PLA or PETG across layers (unverified; PLA filament datasheets give
+ * about 3.5 GPa in the layer plane).
+ */
+export const MODULUS_MPA = 2000
+/** Printed PLA or PETG on itself, dry (unverified). It sets the adjuster's torque and its self-locking. */
+export const FRICTION = 0.3
+/** The thread's flank half-angle: the round thread is taken as a 30-degree flank (unverified approximation). */
+export const FLANK_DEG = 30
+/** Contact flattening and layer bedding under the pad and on the window floors, added to the deflection (our assumption, unverified). */
+export const BEDDING_MM = 0.02
 
 interface Support {
   name: string
@@ -73,9 +99,26 @@ export interface StrengthReport {
   reactions: { support: string; at: [number, number]; reactionN: number }[]
   lines: StressLine[]
   minSafety: number
+  /** How far the island moves down under the load, by part (mm). */
+  deflectionMm: Record<string, number> & { total: number }
+  adjuster: {
+    /** Torque per newton of axial force on the pad, N·mm/N: lead + thread friction + pad friction. */
+    torquePerNewtonMm: number
+    /** Torque to push the socket onto the pins at the full mating force, and that torque as a force at the knob's rim. */
+    setTorqueNmm: number
+    setRimForceN: number
+    /** The thread self-locks when the friction exceeds the lead: tan(lead angle) < FRICTION / cos(flank). */
+    leadTan: number
+    selfLocking: boolean
+    /** Thread length engaged in the keeper at the lowest setting (mm). */
+    engagedMm: number
+  }
+  /** flexureLimit(): what a printed spring under the island could give. */
+  spring: ReturnType<typeof flexureLimit>
 }
 
 const r2 = (x: number) => Math.round(x * 100) / 100
+const r3 = (x: number) => Math.round(x * 1000) / 1000
 
 /**
  * The section of a post across its hanging direction at a window, between x0 and x1: the post's
@@ -100,12 +143,31 @@ function postSection(post: [number, number, number, number], x0: number, x1: num
   return { area, centroid, inertia, c: Math.max(centroid - y0, y1 - centroid) }
 }
 
+/**
+ * The largest force a printed flexure under the island could give over the
+ * adjuster's travel (PAD_RANGE) at the in-layer strength over MIN_SAFETY: a
+ * beam across the island's shorter side, loaded at its middle, as wide as the
+ * island. For a centre-loaded simply supported beam the stress at deflection d
+ * is 6 E t d / L^2, so the thickness is set by the travel, and the force is
+ * then 4 E b t^3 d / L^3.
+ */
+export function flexureLimit() {
+  const span = ISLAND[3] - ISLAND[1]
+  const width = ISLAND[2] - ISLAND[0]
+  const travel = PAD_RANGE[1] - PAD_RANGE[0]
+  const allowable = STRENGTH_MPA.inLayer / MIN_SAFETY
+  const E = 3500 // the stiffer in-layer value favours the spring
+  const t = (allowable * span ** 2) / (6 * E * travel)
+  const force = (4 * E * width * t ** 3 * travel) / span ** 3
+  return { spanMm: r2(span), widthMm: r2(width), travelMm: r3(travel), thicknessMm: r3(t), maxForceN: r2(force), neededN: LOADS.insertionN }
+}
+
 export function backstopStrength(load = LOADS.insertionN): StrengthReport {
   const sup = supports()
-  const forces = CONTACTS.map(at => ({ at, f: load / CONTACTS.length }))
-  const F = forces.reduce((s, p) => s + p.f, 0)
-  const Mx = forces.reduce((s, p) => s + p.f * p.at[0], 0)
-  const My = forces.reduce((s, p) => s + p.f * p.at[1], 0)
+  const at = ADJUSTER.at
+  const F = load
+  const Mx = F * at[0]
+  const My = F * at[1]
   // Reactions R_i = a + b x_i + c y_i with sum R = F, sum R x = Mx, sum R y = My.
   const S = (f: (s: Support) => number) => sup.reduce((acc, s) => acc + f(s), 0)
   const A = [
@@ -121,6 +183,24 @@ export function backstopStrength(load = LOADS.insertionN): StrengthReport {
     const strength = direction == 'in layer' ? STRENGTH_MPA.inLayer : direction == 'across layers' ? STRENGTH_MPA.acrossLayers : STRENGTH_MPA.shear
     lines.push({ part, stressMpa: r2(stress), strengthMpa: strength, direction, safety: r2(strength / Math.max(stress, 1e-9)) })
   }
+  const deflection: Record<string, number> = {}
+  const E = MODULUS_MPA
+
+  // The adjuster. The pad bears on the socket body; the core between the pad and the keeper is
+  // in compression; the thread can strip on a cylinder at its mean radius over half its length
+  // (the lobe fills half of each turn), in the keeper or in the adjuster.
+  const { lobe, offset, pad, pitch, clearance } = ADJUSTER
+  const core = lobe - offset
+  const mean = lobe
+  const threadTopLowest = PAD_RANGE[0] - pad.height
+  const engaged = Math.min(KEEPER_THICKNESS, threadTopLowest - KEEPER_BOTTOM)
+  line('adjuster pad on the socket body (compression)', F / (Math.PI * pad.radius ** 2), 'across layers')
+  line('adjuster core (compression)', F / (Math.PI * core ** 2), 'across layers')
+  line('adjuster thread stripping', F / (2 * Math.PI * mean * engaged * 0.5), 'shear')
+  // Core compression from the pad to the middle of the engaged thread, at the highest setting (the longest).
+  const coreLength = PAD_RANGE[1] - (KEEPER_TOP + KEEPER_BOTTOM) / 2
+  deflection.adjusterCore = (F * coreLength) / (E * Math.PI * core ** 2)
+
   sup.forEach((s, i) => {
     const R = Math.abs(reactions[i].reactionN)
     const len = s.tongue[2] - s.tongue[0]
@@ -133,6 +213,7 @@ export function backstopStrength(load = LOADS.insertionN): StrengthReport {
     const thick = post[3] - post[1]
     const span = s.window[1] - s.window[0]
     line(`${s.name}: window floor bending`, (6 * ((R * span) / 8)) / (thick * POST_FOOT ** 2), 'in layer')
+    const floorDeflection = (R * span ** 3) / (192 * E * ((thick * POST_FOOT ** 3) / 12))
     // The post at the window level: its full-thickness piers and the wall behind the window, over
     // this window's share of the post (posts with two windows are split between them), pulled
     // across the layers, plus the bending from the reaction's offset from that section's centroid.
@@ -143,16 +224,46 @@ export function backstopStrength(load = LOADS.insertionN): StrengthReport {
     const section = postSection(post, x0, x1, s.window)
     const e = Math.abs(s.at[1] - section.centroid)
     line(`${s.name}: post at the window (tension + bending)`, R / section.area + (R * e * section.c) / section.inertia, 'across layers')
+    const postStretch = (R * (LEDGE_Z - WINDOW.floor)) / (E * section.area)
+    // The keeper is rigid on its supports, so the worst support's give is an upper bound at the pad.
+    deflection.windowFloors = Math.max(deflection.windowFloors ?? 0, floorDeflection)
+    deflection.posts = Math.max(deflection.posts ?? 0, postStretch)
   })
-  // Keeper plate: a beam from the -Y tongues to the P3a tongue, the whole load at the contacts'
-  // centroid, the width of the plate under the island.
+
+  // Keeper plate: a beam from the -Y tongues to the P3a tongue with the whole load at the adjuster,
+  // at its section through the thread (the plate under the island less the hole), at most 10 mm wide.
   const yA = Math.min(...sup.filter(s => s.post != 'P3a').map(s => s.at[1]))
   const yB = sup.find(s => s.post == 'P3a')!.at[1]
-  const yF = My / F
   const span = yB - yA
-  const M = (F * (yF - yA) * (yB - yF)) / span
+  const la = at[1] - yA, lb = yB - at[1]
+  const M = (F * la * lb) / span
   const plate = KEEPER_PARTS[0]
-  const width = Math.min(plate[2] - plate[0], 10) // conservative: a 10 mm wide strip carries it
-  line('keeper plate bending', (6 * M) / (width * KEEPER_THICKNESS ** 2), 'in layer')
-  return { loadN: load, reactions: reactions.map(r => ({ ...r, reactionN: r2(r.reactionN) })), lines, minSafety: Math.min(...lines.map(l => l.safety)) }
+  const hole = 2 * (lobe + offset + clearance)
+  const width = Math.min(plate[2] - plate[0] - hole, 10)
+  line('keeper plate bending (section through the thread)', (6 * M) / (width * KEEPER_THICKNESS ** 2), 'in layer')
+  deflection.keeperPlate = (F * la ** 2 * lb ** 2) / (3 * E * ((width * KEEPER_THICKNESS ** 3) / 12) * span)
+  deflection.bedding = BEDDING_MM
+  const total = Object.values(deflection).reduce((s, d) => s + d, 0)
+
+  // Torque to turn the adjuster against an axial force: lead, thread friction at the mean radius,
+  // and the pad turning on the socket body (uniform pressure: 2/3 of its radius).
+  const flank = Math.cos((FLANK_DEG * Math.PI) / 180)
+  const torquePerNewton = pitch / (2 * Math.PI) + (FRICTION * mean) / flank + FRICTION * ((2 / 3) * pad.radius)
+  const leadTan = pitch / (2 * Math.PI * mean)
+  return {
+    loadN: load,
+    reactions: reactions.map(r => ({ ...r, reactionN: r2(r.reactionN) })),
+    lines,
+    minSafety: Math.min(...lines.map(l => l.safety)),
+    deflectionMm: { ...Object.fromEntries(Object.entries(deflection).map(([k, v]) => [k, Math.round(v * 1e4) / 1e4])), total: r3(total) },
+    adjuster: {
+      torquePerNewtonMm: r3(torquePerNewton),
+      setTorqueNmm: r2(torquePerNewton * LOADS.insertionN),
+      setRimForceN: r2((torquePerNewton * LOADS.insertionN) / ADJUSTER.knob.radius),
+      leadTan: r3(leadTan),
+      selfLocking: leadTan < FRICTION / flank,
+      engagedMm: r3(engaged),
+    },
+    spring: flexureLimit(),
+  }
 }

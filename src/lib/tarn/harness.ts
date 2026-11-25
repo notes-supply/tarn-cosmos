@@ -1,6 +1,6 @@
 /**
  * Switch, socket and harness-stack facts for the Tarn flex harness, and the
- * per-key spec fields built from them (tarnSpec 0.2: switchRotation, seat).
+ * per-key spec fields built from them (tarnSpec 0.2 and later: switchRotation, seat).
  *
  * Pure numbers: no CAD kernel and no Manifold, so the spec can be built
  * without either. The measurements against the exported case are in seat.ts.

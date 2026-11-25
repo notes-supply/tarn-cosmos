@@ -23,14 +23,15 @@ import { Assembly } from '$lib/worker/modeling/assembly'
 import { combine, getOC } from '$lib/worker/modeling/index'
 import Trsf from '$lib/worker/modeling/transformation'
 import getManifold, { type Manifold, type ManifoldToplevel } from '@rianadon/manifold-3d'
-import { type AnyShape, cast } from 'replicad'
+import { type AnyShape, cast, type Shape3D } from 'replicad'
 import type { BufferGeometry } from 'three'
 import { Matrix4 } from 'three/src/math/Matrix4.js'
 import { Vector3 } from 'three/src/math/Vector3.js'
 import { partFlipped } from './harness'
-import { islandPose } from './seat'
-import { keeperPrintSolid, keeperSolid, SOCKET_ID } from './socket'
-import { type HalfContext, isSpecKey, keycapSeat, partMatrix, type SpecHalf } from './spec'
+import { applyMcuFeatures } from './mcuCase'
+import { socketPose } from './seat'
+import { adjusterManifold, KEEPER_TOP, keeperManifold, keeperSolid, SOCKET_BOTTOM, SOCKET_ID } from './socket'
+import { type HalfContext, isSpecKey, keycapSeat, microcontrollerMatrix, partMatrix, type SpecHalf, TARN_MCU } from './spec'
 
 /** A triangle mesh in the half frame. */
 export interface TriMesh {
@@ -96,11 +97,19 @@ export async function buildCaseParts(ctx: HalfContext, timings: Record<string, n
   })
   const holder = conf.microcontroller ? await time('holder', () => boardHolder(conf, geo)) : null
 
-  return {
+  const parts = {
     body: body.map(p => ({ name: p.name, shape: toHalfFrame(p.shape, ctx) })),
     plate: toHalfFrame(plate, ctx),
     holder: holder ? toHalfFrame(holder, ctx) : null,
   }
+  // Tarn's MCU board (mcu.ts): the J3 relief and antenna cut in the holder, the antenna hole and battery cradle in the plate.
+  const mcu = microcontrollerMatrix(ctx, geo)
+  if (mcu && conf.microcontroller == TARN_MCU) {
+    const fitted = await time('mcuFeatures', () => applyMcuFeatures({ holder: parts.holder as Shape3D | null, plate: parts.plate as Shape3D | null }, mcu, side))
+    parts.holder = fitted.holder
+    parts.plate = fitted.plate!
+  }
+  return parts
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +286,44 @@ export function separatePinches(mesh: TriMesh): number {
   return moved
 }
 
+/** Radius (mm) of the rod weldPinchedEdges lays along an edge where two parts of a solid only touch. */
+export const WELD_RADIUS_MM = 0.02
+
+/**
+ * separatePinches cannot part two sheets that touch along an edge whose ends
+ * float32 rounding has already joined; the STL then has an edge with four
+ * triangles (a reader splits off a sliver shell). Lay a thin rod
+ * (WELD_RADIUS_MM, the hull of two small octahedra) along each such edge of
+ * the final mesh, so the two parts are joined by material there. Returns the
+ * welded solid (the input is consumed) and how many edges were welded.
+ */
+export function weldPinchedEdges(mf: ManifoldToplevel, solid: Manifold, mesh: TriMesh): { manifold: Manifold; welded: number } {
+  const { verts, remap } = byPosition(mesh)
+  const count = new Map<string, number>()
+  for (let t = 0; t < mesh.indices.length; t += 3) {
+    for (let e = 0; e < 3; e++) {
+      const a = remap[mesh.indices[t + e]], b = remap[mesh.indices[t + ((e + 1) % 3)]]
+      const k = a < b ? `${a},${b}` : `${b},${a}`
+      count.set(k, (count.get(k) ?? 0) + 1)
+    }
+  }
+  const pinched = [...count].filter(([, c]) => c > 2).map(([k]) => k.split(',').map(Number))
+  if (!pinched.length) return { manifold: solid, welded: 0 }
+  const r = WELD_RADIUS_MM
+  const rods = pinched.map(([a, b]) => {
+    const pts: [number, number, number][] = []
+    for (const v of [a, b]) {
+      const [x, y, z] = [verts[3 * v], verts[3 * v + 1], verts[3 * v + 2]]
+      pts.push([x + r, y, z], [x - r, y, z], [x, y + r, z], [x, y - r, z], [x, y, z + r], [x, y, z - r])
+    }
+    return mf.Manifold.hull(pts)
+  })
+  const manifold = mf.Manifold.union([solid, ...rods])
+  solid.delete()
+  rods.forEach(m => m.delete())
+  return { manifold, welded: pinched.length }
+}
+
 /**
  * Internal voids thinner than this (mean thickness, mm) are filled after a
  * union. They are the float-noise gaps between solids that Cosmos builds face
@@ -295,6 +342,8 @@ export interface Fused {
   /** Internal voids filled after the union, and their total volume (mm^3, negative). */
   voidsFilled: number
   voidVolume: number
+  /** Edges where two parts of the solid only touched, welded with WELD_RADIUS_MM (weldPinchedEdges). */
+  weldedEdges: number
   /** Connected components left. */
   components: number
   volume: number
@@ -336,12 +385,25 @@ export function fuseShapes(mf: ManifoldToplevel, shapes: AnyShape[], opts: MeshO
   }
   const voids = pieces.filter(isVoid)
   const kept = pieces.filter(c => !isVoid(c))
-  const manifold = mf.Manifold.compose(kept)
+  const composed = mf.Manifold.compose(kept)
   const voidVolume = voids.reduce((v, c) => v + c.volume(), 0)
   pieces.forEach(p => p.delete())
-  const raw = manifoldMesh(manifold)
-  const separatedVertices = separatePinches(raw)
-  const mesh = withoutDegenerate(raw)
+  let manifold = composed
+  let raw = manifoldMesh(manifold)
+  let separatedVertices = separatePinches(raw)
+  let mesh = withoutDegenerate(raw)
+  const weld = weldPinchedEdges(mf, manifold, mesh)
+  const welded = weld.welded
+  if (welded) {
+    // A rod can close tiny pockets against the faces it joins: fill them as voids too.
+    const parts = weld.manifold.decompose()
+    weld.manifold.delete()
+    manifold = mf.Manifold.compose(parts.filter(c => !isVoid(c)))
+    parts.forEach(p => p.delete())
+    raw = manifoldMesh(manifold)
+    separatedVertices = separatePinches(raw)
+    mesh = withoutDegenerate(raw)
+  }
   return {
     manifold,
     mesh,
@@ -349,6 +411,7 @@ export function fuseShapes(mf: ManifoldToplevel, shapes: AnyShape[], opts: MeshO
     solids: solids.length,
     voidsFilled: voids.length,
     voidVolume,
+    weldedEdges: welded,
     components: kept.length,
     volume: manifold.volume(),
     genus: manifold.genus(),
@@ -524,36 +587,44 @@ export function transformMesh(mesh: TriMesh, matrix: Matrix4): TriMesh {
 }
 
 export interface Keepers {
-  /** One keeper in the switch frame, as installed. */
-  template: TriMesh
-  /** The same keeper as it slides in, its snap arm pressed down. */
-  sliding: TriMesh
-  /** The keeper for printing: underside on the bed at z = 0. */
-  print: TriMesh
-  printStep: Uint8Array
-  /** Every keeper of the half in its place (half frame), one closed shell each. */
+  /** One keeper with its adjuster set to the nominal socket underside, socket frame. */
+  installed: Manifold
+  /** The keeper as it slides in (snap arm pressed down) with its adjuster screwed back, socket frame. */
+  sliding: Manifold
+  /** The keeper and the adjuster as installed, socket frame. */
+  keeper: TriMesh
+  adjuster: TriMesh
+  /** For printing: the keeper underside down, the adjuster knob down, both at z = 0. */
+  keeperPrint: TriMesh
+  adjusterPrint: TriMesh
+  /** Every keeper and adjuster of the half in place (half frame), one closed shell each. */
   placed: TriMesh
   ids: string[]
 }
 
-/** The keepers of a half's Tarn socket keys, placed with the spec poses. null when the half has none. */
-export async function tarnKeepers(half: SpecHalf, opts: MeshOptions): Promise<Keepers | null> {
+/** The keepers and adjusters of a half's Tarn socket keys, placed with the spec poses. null when the half has none. */
+export async function tarnKeepers(mf: ManifoldToplevel, half: SpecHalf, opts: MeshOptions): Promise<Keepers | null> {
   const keys = half.keys.filter(k => k.socket == SOCKET_ID)
   if (!keys.length) return null
   const solid = keeperSolid()
   const slidingSolid = keeperSolid(false)
-  const printSolid = keeperPrintSolid()
-  const template = shapeMesh(solid, opts)
-  const sliding = shapeMesh(slidingSolid, opts)
-  slidingSolid.delete()
-  const print = shapeMesh(printSolid, opts)
-  const printStep = await stepFile([{ name: 'Tarn Keeper', shape: printSolid }])
+  const keeper = keeperManifold(mf, toManifold(mf, shapeMesh(solid, opts)))
+  const keeperSliding = keeperManifold(mf, toManifold(mf, shapeMesh(slidingSolid, opts)))
   solid.delete()
-  printSolid.delete()
-  const placed = mergeMeshes(keys.map(k => transformMesh(template, islandPose(k))))
-  return { template, sliding, print, printStep, placed, ids: keys.map(k => k.id) }
+  slidingSolid.delete()
+  const adjuster = adjusterManifold(mf, SOCKET_BOTTOM)
+  const retracted = adjusterManifold(mf, KEEPER_TOP - 0.1)
+  const installed = mf.Manifold.union([keeper, adjuster])
+  const sliding = mf.Manifold.union([keeperSliding, retracted])
+  const keeperMesh = manifoldMesh(keeper), adjusterMesh = manifoldMesh(adjuster)
+  const onBed = (m: TriMesh) => {
+    const minZ = Math.min(...Array.from({ length: m.positions.length / 3 }, (_, i) => m.positions[3 * i + 2]))
+    return transformMesh(m, new Matrix4().makeTranslation(0, 0, -minZ))
+  }
+  const placed = mergeMeshes(keys.flatMap(k => [transformMesh(keeperMesh, socketPose(k)), transformMesh(adjusterMesh, socketPose(k))]))
+  for (const m of [keeper, keeperSliding, adjuster, retracted]) m.delete()
+  return { installed, sliding, keeper: keeperMesh, adjuster: adjusterMesh, keeperPrint: onBed(keeperMesh), adjusterPrint: onBed(adjusterMesh), placed, ids: keys.map(k => k.id) }
 }
-
 /** Matrix4 from a row-major spec pose. */
 export function poseFromSpec(p: number[]): Matrix4 {
   return new Matrix4().set(...(p as [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number]))

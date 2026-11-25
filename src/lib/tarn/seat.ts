@@ -11,8 +11,9 @@
  *   Under a Tarn socket (choc-v2-tarn) the stack is the whole island envelope
  *   of socket.ts: stiffener and flex over the island outline, the hotswap
  *   socket's real outline and the diode, plus the switch pins;
- * - for Tarn sockets, the keepers: each keeper against the case, its
- *   neighbours' keepers, and the room it needs to go in (checkKeepers).
+ * - for Tarn sockets, the keepers and their adjusters: each against the case,
+ *   its neighbours, the room the keeper needs to go in and the room to turn
+ *   the adjuster's knob (checkKeepers).
  *
  * Obstacles and poses are both in the half frame, so a key's switch-frame boxes
  * are placed with its spec pose.
@@ -22,7 +23,22 @@ import type { Manifold, ManifoldToplevel, Mat4 } from '@rianadon/manifold-3d'
 import { Matrix4 } from 'three/src/math/Matrix4.js'
 import { Vector3 } from 'three/src/math/Vector3.js'
 import { type Box3, plannedStack, rotateXY, roundBox, seatFootprint, STACK, switchFacts } from './harness'
-import { boxToSwitchFrame, FOOTPRINT_RECT, ISLAND, islandEnvelope, islandTurn, KEEPER_BOTTOM, KEEPER_THICKNESS, POST_BOTTOM, type Prism, SOCKET_ID, TONGUE } from './socket'
+import {
+  ADJUSTER,
+  ADJUSTER_LENGTH,
+  boxToSwitchFrame,
+  FOOTPRINT_RECT,
+  ISLAND,
+  islandEnvelope,
+  KEEPER_BOTTOM,
+  KEEPER_THICKNESS,
+  PAD_RANGE,
+  POST_BOTTOM,
+  type Prism,
+  SOCKET_ID,
+  socketTurn,
+  TONGUE,
+} from './socket'
 import { type HalfContext, isSpecKey, type Pose, type SpecHalf } from './spec'
 
 /**
@@ -41,9 +57,9 @@ export function poseMatrix(p: Pose): Matrix4 {
   return new Matrix4().set(...(p as [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number]))
 }
 
-/** A Tarn key's island frame (socket.ts) in the half frame: its pose turned by islandTurn(switchRotation). */
-export function islandPose(key: { pose: Pose; switchRotation: number | null }): Matrix4 {
-  return poseMatrix(key.pose).multiply(new Matrix4().makeRotationZ((islandTurn(key.switchRotation ?? 180) * Math.PI) / 180))
+/** A Tarn key's socket frame (socket.ts) in the half frame: its pose turned by socketTurn(switchRotation). */
+export function socketPose(key: { pose: Pose; switchRotation: number | null }): Matrix4 {
+  return poseMatrix(key.pose).multiply(new Matrix4().makeRotationZ((socketTurn(key.switchRotation ?? 180) * Math.PI) / 180))
 }
 
 /** A switch-frame box placed in the half frame. */
@@ -55,14 +71,14 @@ export function boxSolid(mf: ManifoldToplevel, box: Box3, pose: Matrix4): Manifo
   return placed
 }
 
-/** A switch-frame prism (polygon in XY between two heights) placed in the half frame. */
-export function prismSolid(mf: ManifoldToplevel, p: Prism, pose: Matrix4, dz = 0): Manifold {
+/** A prism (polygon in XY between two heights) placed in the half frame, shrunk by `shrink` at both ends. */
+export function prismSolid(mf: ManifoldToplevel, p: Prism, pose: Matrix4, shrink = 0): Manifold {
   const area = p.outline.reduce((a, [x, y], i) => {
     const [x2, y2] = p.outline[(i + 1) % p.outline.length]
     return a + x * y2 - x2 * y
   }, 0)
   const outline = area < 0 ? [...p.outline].reverse() : p.outline
-  const local = mf.Manifold.extrude([outline], p.zMax - p.zMin).translate([0, 0, p.zMin + dz])
+  const local = mf.Manifold.extrude([outline], p.zMax - p.zMin - 2 * shrink).translate([0, 0, p.zMin + shrink])
   const placed = local.transform(pose.elements as unknown as Mat4)
   local.delete()
   return placed
@@ -226,9 +242,10 @@ export function measureSeats(mf: ManifoldToplevel, ctx: HalfContext, half: SpecH
         return { name: p.name, box: { min: [x - r, y - r, p.tipZ], max: [x + r, y + r, facts!.housingBottomZ] } as Box3 }
       })
       const interferingParts: Record<string, number> = {}
-      const frame = islandPose(key)
+      const frame = socketPose(key)
       for (const p of prisms) {
-        const solid = prismSolid(mf, p, frame, -PLANE_GAP_MM)
+        // Shrunk at both ends: the stiffener bears on the switch housing and the socket body on the adjuster.
+        const solid = prismSolid(mf, p, frame, PLANE_GAP_MM)
         const v = overlapVolume(solid, obstacles)
         solid.delete()
         if (v > INTERFERENCE_MM3) interferingParts[p.name] = r3(v)
@@ -275,6 +292,13 @@ export function measureSeats(mf: ManifoldToplevel, ctx: HalfContext, half: SpecH
  * plus `marginMm`, must be free of case material.
  */
 export const KEEPER_ACCESS = { marginMm: 0.2 } as const
+/**
+ * Room to turn the adjuster's knob with fingertips from below (bottom plate
+ * off): a cylinder `margin` wider than the knob, from the knob at its lowest
+ * setting `depth` down, more than twice the knob's height. Our assumption
+ * (unverified) for a fingertip rolling or pinching the knurled rim.
+ */
+export const KNOB_ACCESS = { marginMm: 1.0, depthMm: 4 } as const
 /** Touching faces (tongue on window floor, keeper under P3b) leave slivers this small after meshing. */
 export const KEEPER_TOUCH_MM3 = 0.02
 
@@ -288,6 +312,8 @@ export interface KeeperResult {
   insertionOverlapMm3: number
   /** Case body material in the way in (KEEPER_ACCESS). */
   wayInOverlapMm3: number
+  /** Case body material where a fingertip turns the adjuster's knob (KNOB_ACCESS). */
+  knobAccessOverlapMm3: number
   ok: boolean
 }
 
@@ -300,20 +326,20 @@ export interface KeeperReport {
 
 /**
  * Check every Tarn keeper of a half: that it fits where it is installed, that
- * it does not collide with its neighbours, and that it can go in from below
- * with the bottom plate off. `keeper` is the keeper in the switch frame,
- * `sliding` the keeper as it slides in (snap arm pressed down, socket.ts
- * keeperSolid(false)); `material` is case, plate and holder; `body` the case
- * alone.
+ * it does not collide with its neighbours, that it can go in from below with
+ * the bottom plate off, and that a fingertip can reach its adjuster's knob. `keeper` is the keeper with its adjuster as
+ * installed, in the socket frame; `sliding` the keeper as it slides in (snap
+ * arm pressed down, adjuster screwed back); `material` is case, plate and
+ * holder; `body` the case alone.
  */
 export function checkKeepers(mf: ManifoldToplevel, half: SpecHalf, keeper: Manifold, sliding: Manifold, material: Manifold, body: Manifold): KeeperReport {
   const start = performance.now()
   const keys = half.keys.filter(k => k.socket == SOCKET_ID)
-  const placed = keys.map(k => keeper.transform(islandPose(k).elements as unknown as Mat4))
+  const placed = keys.map(k => keeper.transform(socketPose(k).elements as unknown as Mat4))
   const centres = keys.map(k => new Vector3(k.pose[3], k.pose[7], k.pose[11]))
   const sweepBottom = POST_BOTTOM - KEEPER_THICKNESS - KEEPER_ACCESS.marginMm
   const results = keys.map((k, i): KeeperResult => {
-    const shifted = islandPose(k).multiply(new Matrix4().makeTranslation(0, TONGUE.slide, 0))
+    const shifted = socketPose(k).multiply(new Matrix4().makeTranslation(0, TONGUE.slide, 0))
     const installedOverlapMm3 = r3(overlapVolume(placed[i], material))
     const keeperOverlaps: Record<string, number> = {}
     keys.forEach((other, j) => {
@@ -333,8 +359,16 @@ export function checkKeepers(mf: ManifoldToplevel, half: SpecHalf, keeper: Manif
     swept.delete()
     const wayInOverlapMm3 = r3(overlapVolume(sweep, body))
     sweep.delete()
-    const ok = [installedOverlapMm3, insertionOverlapMm3, wayInOverlapMm3].every(v => v <= KEEPER_TOUCH_MM3) && Object.keys(keeperOverlaps).length == 0
-    return { id: k.id, installedOverlapMm3, keeperOverlaps, insertionOverlapMm3, wayInOverlapMm3, ok }
+    const knobBottom = PAD_RANGE[0] - ADJUSTER_LENGTH - ADJUSTER.knob.height
+    const r = ADJUSTER.knob.radius + KNOB_ACCESS.marginMm
+    const finger = mf.Manifold.cylinder(KNOB_ACCESS.depthMm, r, r, 32)
+      .translate([ADJUSTER.at[0], ADJUSTER.at[1], knobBottom - KNOB_ACCESS.depthMm])
+    const fingerPlaced = finger.transform(socketPose(k).elements as unknown as Mat4)
+    finger.delete()
+    const knobAccessOverlapMm3 = r3(overlapVolume(fingerPlaced, body))
+    fingerPlaced.delete()
+    const ok = [installedOverlapMm3, insertionOverlapMm3, wayInOverlapMm3, knobAccessOverlapMm3].every(v => v <= KEEPER_TOUCH_MM3) && Object.keys(keeperOverlaps).length == 0
+    return { id: k.id, installedOverlapMm3, keeperOverlaps, insertionOverlapMm3, wayInOverlapMm3, knobAccessOverlapMm3, ok }
   })
   placed.forEach(p => p.delete())
   return { side: half.side, keys: results, ok: results.filter(r => r.ok).length, ms: Math.round(performance.now() - start) }

@@ -245,7 +245,7 @@ export const PART_INFO: Record<CuttleKey['type'], PartInfo> = {
     bomIcon: 'switch',
   },
   // Tarn: holds one island of the Tarn flex harness (FR4 1.6 stiffener, 0.12 flex, Kailh hotswap socket)
-  // with a printed keeper under the hotswap socket. Geometry and facts: src/lib/tarn/socket.ts, whose
+  // with a printed keeper and adjuster screw under the hotswap socket. Geometry and facts: src/lib/tarn/socket.ts, whose
   // numbers these must match (src/lib/tarn/socket.test.ts checks it). The island is off-centre, so the
   // footprint is offset; 'Island East' turns everything 180 degrees.
   'choc-v2-tarn': {
@@ -255,12 +255,15 @@ export const PART_INFO: Record<CuttleKey['type'], PartInfo> = {
     stepFile: '/target/key-choc-v2-tarn.step',
     partOverride: CHOC_PART,
     singlePartForVariants: true,
-    socketSize: () => [19.6, 19.9, 2.2] as PartSize,
+    socketSize: () => [19.6, 19.9, 2.0] as PartSize,
     socketOffset: (v: Variant) => (v.island == 'Island East' ? [0.6, 0.55] : [-0.6, -0.55]) as [number, number],
     // Both offsets at once (the floor only needs the corners), so it also holds for mirrored keys.
-    partBottom: () => [box(20.8, 21, 10.32)],
+    partBottom: () => [box(20.8, 21, 12.33)],
     keycap: 'mx',
-    extraBomItems: () => ({ 'tarn-keeper': { item: 'Tarn keeper (printed, keeper.stl)', icon: 'pcb', count: 1 } }),
+    extraBomItems: () => ({
+      'tarn-keeper': { item: 'Tarn keeper (printed, keeper.stl)', icon: 'pcb', count: 1 },
+      'tarn-adjuster': { item: 'Tarn adjuster screw (printed, adjuster.stl)', icon: 'pcb', count: 1 },
+    }),
     variants: {
       island: ['Island West', 'Island East'],
     },
@@ -268,8 +271,9 @@ export const PART_INFO: Record<CuttleKey['type'], PartInfo> = {
     decodeVariant: makeDecodeVariant('choc-v2-tarn', { island: 1 }),
     numPins: () => ({ matrix: 1 }),
     flipPart: (v: Variant) => v.island == 'Island East',
+    accessFromBelow: true,
     description:
-      'Holds one island of the Tarn flex harness: the island sits under a 1.2 mm plate, its stiffener against the plate, and a printed keeper that slides and clicks in under its hotswap socket takes the switch insertion force. The pocket is open on all four sides for the harness links. Island West/East picks the side of the key the island sits on; a mirrored half gets the other one.',
+      'Holds one island of the Tarn flex harness under a 1.2 mm plate. A printed keeper slides and clicks in under the island, and a printed thumbscrew in the keeper, turned up by hand once the switch is in, holds the stiffener against the switch housing and takes the switch insertion force. The pocket is open on all four sides for the harness links. Island West/East picks the side of the key the island sits on; a mirrored half gets the other one.',
     icon: 'choc',
     bomIcon: 'switch',
   },
@@ -903,6 +907,8 @@ type PartInfoVariant = {
   socketOffset?: (v: Variant) => [number, number]
 }
 export type PartInfo = (PartInfoNonVariant | PartInfoVariant) & {
+  /** Tarn: parts are fitted from below through the footprint (with the bottom plate off), so no screw boss may sit under it. */
+  accessFromBelow?: boolean
   partName: string
   stepFile: string
   partOverride?: string | null

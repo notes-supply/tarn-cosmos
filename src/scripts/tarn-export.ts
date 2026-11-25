@@ -7,20 +7,20 @@
  * <design> is a Cosmos URL (https://ryanis.cool/cosmos/beta#cm:...), its hash
  * part (cm:..., with or without '#'), or a file containing either.
  *
- * Writes <outdir>/spec.json (tarnSpec 0.2) and, per half, <outdir>/<side>/:
+ * Writes <outdir>/spec.json (tarnSpec 0.3) and, per half, <outdir>/<side>/:
  *   case.step                walls + web + switch holders + screw attachments, as separate named solids
  *   case.stl                 the same parts fused into one manifold solid
  *   plate.step, plate.stl    bottom plate
  *   holder.step, holder.stl  microcontroller holder (when the design has one)
  *   assembly.step            every case part as a named assembly (what Cosmos's STEP download holds)
  *   switches.stl, keycaps.stl  Cosmos's switch and keycap models at rest, in position
- *   keepers.stl              Tarn socket keepers in place (designs with choc-v2-tarn sockets)
- *   keeper.stl, keeper.step  one keeper laid out for printing
+ *   keepers.stl              Tarn socket keepers and adjusters in place (designs with choc-v2-tarn sockets)
+ *   keeper.stl, adjuster.stl one keeper and one adjuster laid out for printing
  *   render-{top,front,iso}.png
  *   render-socket-*.png      close-ups of one Tarn socket with its island and keeper
  * plus <outdir>/export.json with timings, warnings, Cosmos's own design checks,
- * the fused-solid statistics, the harness seat check, the keeper checks and the
- * retention report.
+ * the fused-solid statistics, the harness seat check, the keeper checks, the
+ * backstop calculation, the pin engagement and the retention report.
  *
  * Exit status: 0 on success, 1 on failure, 2 on bad arguments, 3 when the
  * outputs were written but Cosmos reports errors (e.g. colliding keycaps).
@@ -48,6 +48,13 @@ interface Options {
   tolerance: number
   angular: number
   sides: ('left' | 'right')[]
+}
+
+/** The Tarn socket's backstop calculation and pin engagement (strength.ts, socket.ts), when the design has Tarn sockets. */
+async function tarnSocketReport(hasTarnSockets: boolean) {
+  if (!hasTarnSockets) return { backstopStrength: null, pinEngagement: null }
+  const strength = (await import('$lib/tarn/strength')).backstopStrength()
+  return { backstopStrength: strength, pinEngagement: (await import('$lib/tarn/socket')).pinEngagement(strength.deflectionMm.total) }
 }
 
 function usage(msg?: string): never {
@@ -153,7 +160,7 @@ async function main() {
     await setup()
     timings.openCascadeSetupMs = Math.round(performance.now() - tSetup)
     const solids = await import('$lib/tarn/solids')
-    const { checkKeepers, islandPose, measureSeats, poseMatrix } = await import('$lib/tarn/seat')
+    const { checkKeepers, measureSeats, poseMatrix, socketPose } = await import('$lib/tarn/seat')
     const tarnSocket = await import('$lib/tarn/socket')
     const { socketCloseups } = await import('$lib/tarn/closeup')
     const { matchContacts, switchFacts } = await import('$lib/tarn/harness')
@@ -205,6 +212,7 @@ async function main() {
           genus: f!.genus,
           voidsFilled: f!.voidsFilled,
           voidVolumeMm3: Math.round(f!.voidVolume * 1e6) / 1e6,
+          weldedEdges: f!.weldedEdges,
           stl: f!.stl,
           ms: f!.ms,
         }]),
@@ -216,9 +224,9 @@ async function main() {
       const meshes = { body: fuse.body.mesh, plate: fuse.plate?.mesh ?? null, holder: fuse.holder?.mesh ?? null }
 
       // Tarn socket keepers (socket.ts), placed with the spec poses.
-      const keepers = await timed('keepers', () => solids.tarnKeepers(half, meshOpts))
-      const keeperTemplate = keepers ? solids.toManifold(mf, keepers.template) : null
-      const keeperSliding = keepers ? solids.toManifold(mf, keepers.sliding) : null
+      const keepers = await timed('keepers', () => solids.tarnKeepers(mf, half, meshOpts))
+      const keeperTemplate = keepers?.installed ?? null
+      const keeperSliding = keepers?.sliding ?? null
       const keepersPlaced = keepers ? solids.toManifold(mf, keepers.placed) : null
 
       // Harness seats: the clear box under every switch, and the planned stack against the case
@@ -252,9 +260,10 @@ async function main() {
           const i = confIndex[half.keys.indexOf(key)]
           const islandShapes = tarnSocket.islandSolids()
           const views = socketCloseups(mf, {
-            pose: islandPose(key),
+            pose: socketPose(key),
             caseBody: fuse.body.manifold,
-            keeper: keepers.template,
+            keeper: keepers.keeper,
+            adjuster: keepers.adjuster,
             island: islandShapes.map(s => ({ name: s.name, mesh: solids.shapeMesh(s.shape, meshOpts) })),
             switchMesh: await solids.switchMesh(ctx, i).catch(() => null),
             keycapMesh: await solids.keycapMesh(ctx, i).catch(() => null),
@@ -300,8 +309,8 @@ async function main() {
         if (placed.keycaps.indices.length) out('keycapsStl', 'keycaps.stl', solids.binarySTL(placed.keycaps))
         if (keepers) {
           out('keepersStl', 'keepers.stl', solids.binarySTL(keepers.placed))
-          out('keeperStl', 'keeper.stl', solids.binarySTL(keepers.print))
-          out('keeperStep', 'keeper.step', step(keepers.printStep))
+          out('keeperStl', 'keeper.stl', solids.binarySTL(keepers.keeperPrint))
+          out('adjusterStl', 'adjuster.stl', solids.binarySTL(keepers.adjusterPrint))
         }
       })
       for (const [name, m] of Object.entries({ case: meshes.body, plate: meshes.plate, holder: meshes.holder })) {
@@ -345,7 +354,7 @@ async function main() {
         switchRotationCheck: rotationCheck,
         harnessSeat,
         keeperChecks,
-        backstopStrength: switchKeys.some(k => k.socket == 'choc-v2-tarn') ? (await import('$lib/tarn/strength')).backstopStrength() : null,
+        ...(await tarnSocketReport(switchKeys.some(k => k.socket == 'choc-v2-tarn'))),
         closeups,
         retention,
       },

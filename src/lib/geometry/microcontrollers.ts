@@ -1,5 +1,5 @@
 import { convertToMaybeCustomConnectors, type Cuttleform } from '$lib/worker/config'
-import { Vector } from '$lib/worker/modeling/transformation'
+import Trsf, { Vector } from '$lib/worker/modeling/transformation'
 
 import type { ConnectorMaybeCustom, CustomConnector } from '$lib/worker/config.cosmos'
 import { screwInsertDimensions } from '$lib/worker/geometry'
@@ -36,6 +36,16 @@ interface BoardProperties {
   countersinkHoles?: { diameter: number; angle: number }
   cutouts: { origin: Vector; size: Vector }[]
   notches?: { origin: Vector; width: number; height: number }[]
+  /**
+   * Tarn: regions near the board (board frame: x right, y toward the USB edge,
+   * as `cutouts`) that no screw or screw boss may come within `clearance` mm of,
+   * e.g. a PCB antenna. Screw positions inside are not used. A region that
+   * belongs to the board (`followsBoard`, the default) keeps its side of the
+   * board on a mirrored half, whose board is not mirrored; one that belongs to
+   * the case layout (false) is mirrored with the half, so its x is given for a
+   * right half.
+   */
+  keepClear?: { x: [number, number]; y: [number, number]; clearance: number; followsBoard?: boolean; what: string }[]
   /** Amount to carve into the side to create the cutouts for pins */
   sidecutout: number | number[]
   /** (optional) to how far in the positive Y direction the side cutout goes. */
@@ -375,6 +385,14 @@ export const BOARD_PROPERTIES: Record<Microcontroller, BoardProperties> = {
     offset: new Vector(0, 0, 1.835),
     holes: [],
     cutouts: [{ origin: new Vector(-3.6, -31.1, 0), size: new Vector(9, 9, 0) }],
+    // Tarn: tarn-mcu-v1 uses this outline (Tarn ADR 0010). Its NINA-B306 PCB antenna keep-out
+    // (hardware/mcu/tarn-mcu-v1/interface.json, antenna_keepout) wants 10 mm to the casing, plastic
+    // included (u-blox NINA-B3 system integration manual R15 §3.3.3).
+    // The second region is the Tarn battery bay along the outer wall (src/lib/tarn/mcu.ts, BATTERY_BAY).
+    keepClear: [
+      { x: [11.75, 14.95], y: [-27, -19], clearance: 10, what: 'antenna' },
+      { x: [-32, -16], y: [-93, -52], clearance: 0, followsBoard: false, what: 'battery bay' },
+    ],
     sidecutout: [0, 6],
     leftSidePins: ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'],
     rightSidePins: ['GP2', 'GP1', 'R7', 'R4', 'R6', 'R2', 'R3', 'R5', 'R1', 'RESET'],
@@ -542,6 +560,24 @@ export function boardElements(config: Cuttleform, layout: boolean): BoardElement
     },
     ...offset.connectors,
   ] as BoardElement[]).map(maybeFlip)
+}
+
+/**
+ * Tarn: whether a vertical screw of `radius` (its head or boss) at `point` (world
+ * frame) keeps every keepClear region of the microcontroller clear. `board` is
+ * the board frame in the world frame: the connector origin moved by the board
+ * offset. On a flipped half (flipConnectors) the board's x is mirrored.
+ */
+export function clearOfBoardKeepouts(c: Cuttleform, board: Trsf, point: Vector, radius: number) {
+  const zones = c.microcontroller ? BOARD_PROPERTIES[c.microcontroller].keepClear : undefined
+  if (!zones) return true
+  const local = board.inverted().apply(point)
+  return zones.every(z => {
+    const x = c.flipConnectors && z.followsBoard !== false ? -local.x : local.x
+    const dx = Math.max(z.x[0] - x, 0, x - z.x[1])
+    const dy = Math.max(z.y[0] - local.y, 0, local.y - z.y[1])
+    return Math.hypot(dx, dy) >= z.clearance + radius
+  })
 }
 
 export function holderThickness(elements: BoardElement[]) {

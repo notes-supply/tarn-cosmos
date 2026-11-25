@@ -1,3 +1,6 @@
+import { boardElements, clearOfBoardKeepouts } from '$lib/geometry/microcontrollers'
+import { SCREWS } from '$lib/geometry/screws'
+import { PART_INFO } from '$lib/geometry/socketsParts'
 import { Memoize } from 'typescript-memoize'
 import type { BasicShell, BlockShell, Cuttleform, SpecificCuttleform, TiltShell } from './config'
 import {
@@ -20,6 +23,7 @@ import {
   positionsImplMap,
   reinforceTriangles,
   screwIndices,
+  screwInsertDimensions,
   screwOriginTrsf,
   separateSockets2D,
   solveTriangularization,
@@ -106,7 +110,31 @@ export class BaseGeometry<C extends Cuttleform = SpecificCuttleform<BasicShell>>
     for (let i = 0; i < this.screwWalls.length; i++) {
       pos.push(i + 0.5)
     }
-    return pos
+    // Tarn: no screw near the microcontroller's keep-clear regions (e.g. its antenna), nor under a
+    // socket whose parts go in from below.
+    const walls = this.screwWalls
+    return pos.filter(i => {
+      const origin = screwOriginTrsf(this.c, i, walls, this.worldZ).origin()
+      return this.clearOfBoard(origin) && this.clearOfAccess(origin)
+    })
+  }
+
+  /** Tarn: a screw boss at `point` stays outside (in plan) every footprint with accessFromBelow, by its radius plus 0.5 mm. */
+  protected clearOfAccess(point: Vector) {
+    const radius = Math.max(screwInsertDimensions(this.c).outerBottomRadius, SCREWS[this.c.screwSize].countersunkDiameter / 2 + 1) + 0.5
+    return this.c.keys.every((k, i) => {
+      if (!PART_INFO[k.type]?.accessFromBelow) return true
+      const pts = this.allKeyCriticalPoints[i].map(t => t.xyz())
+      return distanceToPolygon2D(point.x, point.y, pts) >= radius
+    })
+  }
+
+  /** Tarn: a screw (its boss, or its head where that is wider) at `point` keeps the board's keepClear regions clear. */
+  protected clearOfBoard(point: Vector) {
+    if (!this.c.microcontroller || !this.connectorOrigin) return true
+    const board = this.connectorOrigin.pretranslated(boardElements(this.c, false)[0].offset.xyz())
+    const boss = Math.max(screwInsertDimensions(this.c).outerBottomRadius, SCREWS[this.c.screwSize].countersunkDiameter / 2 + 1)
+    return clearOfBoardKeepouts(this.c, board, point, boss)
   }
 
   get screwWalls() {
@@ -133,12 +161,15 @@ export class BaseGeometry<C extends Cuttleform = SpecificCuttleform<BasicShell>>
   }
   protected selectedBoardIndices = ['topLeft', 'topRight', 'bottomLeft']
   @Memoize()
-  get boardIndices() {
+  get boardIndices(): LabeledBoardInd {
     if (!this.c.microcontroller) return {}
-    return boardIndices(this.c, this.connectorOrigin, this.boardWalls, this.worldZ, this.bottomZ, this.selectedBoardIndices)
+    const all = boardIndices(this.c, this.connectorOrigin, this.boardWalls, this.worldZ, this.bottomZ, this.selectedBoardIndices)
+    // Tarn: holder screws near the board's keep-clear regions are left out.
+    const positions = positionsImplMap(this.c, this.boardWalls, this.worldZ, all as any)
+    return Object.fromEntries(Object.entries(all).filter(([k]) => this.clearOfBoard(positions[k].origin())))
   }
   get boardIndicesThatAreScrewsToo(): (keyof LabeledBoardInd)[] {
-    return this.c.microcontroller ? ['topLeft'] : []
+    return this.c.microcontroller && this.boardIndices.topLeft !== undefined ? ['topLeft'] : []
   }
   @Memoize()
   get boardPositions() {
@@ -267,4 +298,18 @@ export class TiltGeometry extends BaseGeometry<SpecificCuttleform<TiltShell>> {
   get footIndices() {
     return footIndices(this.c, this.bottomScrewIndices, this.footWalls, this.allWallCriticalPoints(), new Vector(0, 0, 1))
   }
+}
+
+/** Distance in plan from (x, y) to a polygon given by its corners (0 inside). */
+function distanceToPolygon2D(x: number, y: number, pts: number[][]) {
+  let inside = false
+  let best = Infinity
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [ax, ay] = pts[j], [bx, by] = pts[i]
+    if ((ay > y) != (by > y) && x < ((bx - ax) * (y - ay)) / (by - ay) + ax) inside = !inside
+    const dx = bx - ax, dy = by - ay
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)))
+    best = Math.min(best, Math.hypot(x - (ax + t * dx), y - (ay + t * dy)))
+  }
+  return inside ? 0 : best
 }

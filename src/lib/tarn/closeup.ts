@@ -1,10 +1,10 @@
 /**
  * Close-up renders of one Tarn socket with its harness island and keeper in
  * place: two sections and two views from below. Everything is drawn
- * in the key's switch frame (socket.ts), so the pictures read the same on
+ * in the key's socket frame (socket.ts), so the pictures read the same on
  * every key.
  *
- * Colours: case blue-grey, keeper orange, FR4 stiffener
+ * Colours: case blue-grey, keeper orange, adjuster magenta, FR4 stiffener
  * green, flex amber, hotswap socket and diode near black, switch grey, keycap
  * off-white.
  */
@@ -12,11 +12,13 @@
 import type { Manifold, ManifoldToplevel, Mat4 } from '@rianadon/manifold-3d'
 import { Matrix4 } from 'three/src/math/Matrix4.js'
 import { render, type RenderItem, type RGB } from './render'
+import { ADJUSTER } from './socket'
 import { manifoldMesh, toManifold, type TriMesh } from './solids'
 
 export const CLOSEUP_COLORS: Record<string, RGB> = {
   case: [150, 170, 200],
   keeper: [235, 140, 50],
+  adjuster: [200, 60, 160],
   stiffener: [70, 150, 80],
   flex: [215, 165, 40],
   'hotswap socket': [45, 45, 50],
@@ -26,19 +28,20 @@ export const CLOSEUP_COLORS: Record<string, RGB> = {
 }
 
 export interface CloseupInput {
-  /** The key's pose (half frame from switch frame). */
+  /** The key's pose (half frame from socket frame: seat.ts socketPose). */
   pose: Matrix4
   /** The fused case body of the half, in the half frame. */
   caseBody: Manifold
-  /** In the switch frame. */
+  /** In the socket frame. */
   keeper: TriMesh
+  adjuster: TriMesh
   island: { name: string; mesh: TriMesh }[]
   /** In the half frame (Cosmos's models, not closed solids). */
   switchMesh: TriMesh | null
   keycapMesh: TriMesh | null
 }
 
-/** The region drawn around the socket, switch frame. */
+/** The region drawn around the socket, socket frame. */
 const REGION = { min: [-13.5, -13.5, -12], max: [13.5, 13.5, 15] }
 
 /** Keep the triangles of an open mesh whose centroid passes `keep`. */
@@ -79,9 +82,9 @@ export interface Closeup {
 }
 
 /**
- * Renders of the socket at one key: a section across X through the W window
- * and the hotswap socket's receptacle, a section across Y through the -X ledge
- * and the keeper's rim, and two views from below (with and without the keeper).
+ * Renders of the socket at one key: two sections through the adjuster's axis
+ * (across X and across Y), and two views from below (with and without the
+ * keeper and adjuster).
  */
 export function socketCloseups(mf: ManifoldToplevel, input: CloseupInput, size = 1024): Closeup[] {
   const inverse = input.pose.clone().invert()
@@ -97,6 +100,7 @@ export function socketCloseups(mf: ManifoldToplevel, input: CloseupInput, size =
   const solids: { name: string; solid: Manifold }[] = [
     { name: 'case', solid: caseLocal },
     { name: 'keeper', solid: toManifold(mf, input.keeper) },
+    { name: 'adjuster', solid: toManifold(mf, input.adjuster) },
     ...input.island.map(i => ({ name: i.name, solid: toManifold(mf, i.mesh) })),
   ]
 
@@ -132,30 +136,33 @@ export function socketCloseups(mf: ManifoldToplevel, input: CloseupInput, size =
   const views: { name: string; description: string; items: RenderItem[]; look: [number, number, number]; up: [number, number, number] }[] = [
     {
       name: 'section-x',
-      description:
-        'Section at x = 0.5 mm, seen from -X (switch frame; -Y, the hotswap socket side, is on the right): keycap, switch, plate and ledge, stiffener and flex, the hotswap socket on the keeper, the keeper tongue in the W window.',
-      items: items({ axis: 0, at: 0.5 }),
+      description: `Section through the adjuster's axis (x = ${
+        ADJUSTER.at[0]
+      } mm, socket frame), seen from -X (-Y, the hotswap socket side, is on the right): keycap, switch, plate, the stiffener against the switch housing, flex, the hotswap socket on the adjuster's pad, the adjuster's thread in the keeper and its knob below, W and P4 at the far right.`,
+      items: items({ axis: 0, at: ADJUSTER.at[0] }),
       look: [1, 0, 0],
       up: [0, 0, 1],
     },
     {
       name: 'section-y',
-      description: "Section at y = -2.2 mm, seen from -Y (+X on the right): the ledge over the island's -X strip, the keeper rim beside the hotswap socket, P3a and P3b behind.",
-      items: items({ axis: 1, at: -2.2 }),
+      description: `Section through the adjuster's axis (y = ${
+        ADJUSTER.at[1]
+      } mm), seen from -Y (+X on the right): the ledge 0.2 mm over the island's -X strip, the stiffener against the switch housing, the hotswap socket on the adjuster's pad, the thread in the keeper, the knob; P3a and P3b behind.`,
+      items: items({ axis: 1, at: ADJUSTER.at[1] }),
       look: [0, 1, 0],
       up: [0, 0, 1],
     },
     {
       name: 'below',
-      description: 'From below, keeper in place: its four tongues in the windows of W, P4 and P3a, the snap arm under P3b.',
+      description: "From below, keeper in place: its four tongues in the windows of W, P4 and P3a, the snap arm under P3b, and the adjuster's knurled knob under the hotswap socket.",
       items: items(null, ['keycap'], false),
       look: [0.35, 0.45, 1],
       up: [0, 1, 0],
     },
     {
       name: 'below-no-keeper',
-      description: 'From below without the keeper: the island in its pocket, the windows in W, P4 and P3a, the snap hole in P3b, and the four open sides where links leave.',
-      items: items(null, ['keeper', 'keycap'], false),
+      description: 'From below without the keeper and adjuster: the island in its pocket, the windows in W, P4 and P3a, the snap hole in P3b, and the four open sides where links leave.',
+      items: items(null, ['keeper', 'adjuster', 'keycap'], false),
       look: [0.35, 0.45, 1],
       up: [0, 1, 0],
     },
