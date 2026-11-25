@@ -56,13 +56,13 @@ If a change affects how the keyboard _looks_, it almost always lands in one of t
 
 ## Tests
 
-The tests use **`bun:test`** (not vitest) and live next to the code as `*.test.ts` (13 files, including the geometry and model manifold checks in `src/lib/worker/` and the firmware generators in `src/routes/beta/lib/firmware/`). Run them with `npm test` (which calls `bun test`). `src/lib/tarn/solids.test.ts` loads OpenCascade and takes a few seconds.
+The tests use **`bun:test`** (not vitest) and live next to the code as `*.test.ts` (14 files, including the geometry and model manifold checks in `src/lib/worker/` and the firmware generators in `src/routes/beta/lib/firmware/`). Run them with `npm test` (which calls `bun test`). `src/lib/tarn/solids.test.ts` loads OpenCascade and builds both halves of two designs, so it takes about 20 s.
 
 `npm run check` (svelte-check + tsc) only type-checks what the root `tsconfig.json` includes plus what those files import, so add new standalone entry points to its `include` list.
 
 ## Tarn headless export
 
-`src/scripts/tarn-export.ts` exports a design without a browser: `spec.json` (Tarn spec 0.1: key, microcontroller, connector and screw poses), case STEP/STL per half, switch and keycap STLs, fixed-view PNG renders and Cosmos's own design checks. Run `bun src/scripts/tarn-export.ts '<cosmos url or hash>' <outdir>` (add `--spec-only` to skip the CAD kernel). The code is in `src/lib/tarn/`; frame conventions are documented at the top of `src/lib/tarn/spec.ts`. `src/scripts/tarn-set-socket.ts` prints a design URL with every switch socket replaced, e.g. to make the Choc V2 version of a layout.
+`src/scripts/tarn-export.ts` exports a design without a browser: `spec.json` (Tarn spec 0.2: key, microcontroller, connector and screw poses, plus per key the switch rotation and the harness seat), case STEP per half (separate named solids) and STL (fused into one manifold with Manifold), switch and keycap STLs, fixed-view PNG renders, Cosmos's own design checks and the harness-stack check. Run `bun src/scripts/tarn-export.ts '<cosmos url or hash>' <outdir>` (add `--spec-only` to skip the CAD kernel). The code is in `src/lib/tarn/`; frame conventions are documented at the top of `src/lib/tarn/spec.ts`, and the switch datasheet frame and harness facts at the top of `src/lib/tarn/harness.ts`. `src/lib/tarn/seat.ts` measures the room under each switch against the fused case. `src/scripts/tarn-set-socket.ts` prints a design URL with every switch socket replaced, e.g. to make the Choc V2 version of a layout.
 
 ## Formatting
 
