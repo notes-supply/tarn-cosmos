@@ -56,13 +56,19 @@ If a change affects how the keyboard _looks_, it almost always lands in one of t
 
 ## Tests
 
-The tests use **`bun:test`** (not vitest) and live next to the code as `*.test.ts` (14 files, including the geometry and model manifold checks in `src/lib/worker/` and the firmware generators in `src/routes/beta/lib/firmware/`). Run them with `npm test` (which calls `bun test`). `src/lib/tarn/solids.test.ts` loads OpenCascade and builds both halves of two designs, so it takes about 20 s.
+The tests use **`bun:test`** (not vitest) and live next to the code as `*.test.ts` (15 files, including the geometry and model manifold checks in `src/lib/worker/` and the firmware generators in `src/routes/beta/lib/firmware/`). Run them with `npm test` (which calls `bun test`). `src/lib/tarn/solids.test.ts` and `socket.test.ts` load OpenCascade and build case halves, so the suite takes about 35 s.
 
 `npm run check` (svelte-check + tsc) only type-checks what the root `tsconfig.json` includes plus what those files import, so add new standalone entry points to its `include` list.
 
 ## Tarn headless export
 
-`src/scripts/tarn-export.ts` exports a design without a browser: `spec.json` (Tarn spec 0.2: key, microcontroller, connector and screw poses, plus per key the switch rotation and the harness seat), case STEP per half (separate named solids) and STL (fused into one manifold with Manifold), switch and keycap STLs, fixed-view PNG renders, Cosmos's own design checks and the harness-stack check. Run `bun src/scripts/tarn-export.ts '<cosmos url or hash>' <outdir>` (add `--spec-only` to skip the CAD kernel). The code is in `src/lib/tarn/`; frame conventions are documented at the top of `src/lib/tarn/spec.ts`, and the switch datasheet frame and harness facts at the top of `src/lib/tarn/harness.ts`. `src/lib/tarn/seat.ts` measures the room under each switch against the fused case. `src/scripts/tarn-set-socket.ts` prints a design URL with every switch socket replaced, e.g. to make the Choc V2 version of a layout.
+`src/scripts/tarn-export.ts` exports a design without a browser: `spec.json` (Tarn spec 0.2: key, microcontroller, connector and screw poses, plus per key the switch rotation and the harness seat), case STEP per half (separate named solids) and STL (fused into one manifold with Manifold), switch and keycap STLs, fixed-view PNG renders, Cosmos's own design checks and the harness-stack check. Run `bun src/scripts/tarn-export.ts '<cosmos url or hash>' <outdir>` (add `--spec-only` to skip the CAD kernel). The code is in `src/lib/tarn/`; frame conventions are documented at the top of `src/lib/tarn/spec.ts`, and the switch datasheet frame and harness facts at the top of `src/lib/tarn/harness.ts`. `src/lib/tarn/seat.ts` measures the room under each switch against the fused case and checks the Tarn keepers. `src/scripts/tarn-set-socket.ts` prints a design URL with every switch socket replaced, e.g. to make the Choc V2 version of a layout.
+
+## Tarn socket (`choc-v2-tarn`)
+
+`src/lib/tarn/socket.ts` is the single source of the Tarn Choc V2 socket: the plate, the posts that hold the flex-harness island, the keeper (a separate printed part under the island's hotswap socket), the island envelope and the spec `backstop`/`clamp`. Its frame is the island frame, pose · Rz(switchRotation + 180). `src/model_gen/parts.ts` writes both variant STEPs (`Island West`, `Island East` = turned 180°) on every `make parts`. The `choc-v2-tarn` entry in `socketsParts.ts` repeats its footprint numbers (`socket.test.ts` checks they match). Two Cosmos changes support it: `socketOffset` (a footprint not centred on the switch, applied in `keyCriticalPoints`; flipped for `CuttleBaseKey.mirrored` left-half keys) and `mirrorCluster` swapping the Tarn variant, so a mirrored half keeps the island on the same side of the hand. `strength.ts` is the backstop's hand calculation; `closeup.ts` renders one socket in section. `src/scripts/tarn-reference-design.ts` prints the Tarn reference design link and lists every change from Cosmos's default layout.
+
+`make parts` only rebuilds a generated file when it is missing (outside Vercel the git-change test is always taken), except the Tarn socket, which is always rebuilt.
 
 ## Formatting
 
