@@ -29,5 +29,5 @@
   //   "./coverage/**",
   //   "**/_/**"
   // ]
-  "include": ["src/routes/**/*", "src/types/**/*", "src/proto/**/*", "src/model_gen/**/*"]
+  "include": ["src/routes/**/*", "src/types/**/*", "src/proto/**/*", "src/model_gen/**/*", "src/lib/tarn/**/*", "src/scripts/tarn-*.ts"]
 }
