@@ -22,6 +22,7 @@
 
 import { PART_INFO, partBottom, socketSize } from '$lib/geometry/socketsParts'
 import type { CuttleKey } from '$lib/worker/config'
+import { SOCKET_ID, STIFFENER_TOP } from './socket'
 import type { SpecKey } from './spec'
 
 /** Cosmos turns some socket variants' switch model 180 degrees about Z (e.g. North vs South LED). */
@@ -126,9 +127,11 @@ export const SWITCHES: Record<SwitchFamily, SwitchFacts> = {
 }
 
 /**
- * The harness stack under a switch, top to bottom: stiffener, flex, then the
- * hotswap socket body. ADR 0009 fixes the stiffener at FR4 1.6 mm on the
- * switch side of every island.
+ * The provisional harness stack under a switch that has no Tarn spacer (any
+ * socket but choc-v2-tarn), top to bottom: stiffener, flex, then the hotswap
+ * socket body. 1.6 mm is the board the socket is drawn for. ADR 0011 makes the
+ * island steel 0.3 + flex 0.12 under a 1.2 mm printed spacer, which only the
+ * Tarn socket has (socket.ts holds that stack); the same 1.62 mm in all.
  */
 export const STACK = {
   flex: 0.12,
@@ -209,7 +212,8 @@ export function specSeat(key: CuttleKey, family: SpecKey['switch']): SpecSeat | 
   const plateUndersideZ = -size[2]
   return {
     plateUndersideZ: round(plateUndersideZ),
-    stiffenerTopZ: round(Math.min(plateUndersideZ, facts.housingBottomZ)),
+    // Under the Tarn socket the island sits against the printed spacer's underside (ADR 0011).
+    stiffenerTopZ: key.type == SOCKET_ID ? STIFFENER_TOP : round(Math.min(plateUndersideZ, facts.housingBottomZ)),
     reserved: partBottom(key).map(pts => {
       const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]), zs = pts.map(p => p[2])
       return roundBox({ min: [Math.min(...xs), Math.min(...ys), Math.min(...zs)], max: [Math.max(...xs), Math.max(...ys), 0] })

@@ -40,12 +40,14 @@ beforeAll(async () => {
   mf = await manifoldKernel()
 })
 
-describe('the socket holds the island with the ADR 0009 stack', () => {
-  test('the stack is FR4 1.6 + flex 0.12 + socket body 1.8 under the switch housing (ADR 0009)', () => {
-    expect(S.STIFFENER_TOP).toBeCloseTo(S.HOUSING_BOTTOM, 9)
-    expect(S.STIFFENER_TOP - S.SOCKET_BOTTOM).toBeCloseTo(1.6 + 0.12 + 1.8, 9)
-    // ADR 0009: about 0.5 mm deeper than Cosmos's 5.2 mm Choc box, before the keeper.
-    expect(-S.SOCKET_BOTTOM).toBeGreaterThan(5.2 + 0.5)
+describe('the socket holds the island with the ADR 0011 stack', () => {
+  test('the stack is spacer 1.2 + steel 0.3 + flex 0.12 + socket body 1.8 under the switch housing (ADR 0011)', () => {
+    expect(S.HOUSING_BOTTOM - S.STIFFENER_TOP).toBeCloseTo(1.2, 9)
+    expect(S.STIFFENER_TOP - S.SOCKET_BOTTOM).toBeCloseTo(0.3 + 0.12 + 1.8, 9)
+    // ADR 0011: 3.42 mm below the housing bottom, as on a 1.6 mm PCB.
+    expect(S.HOUSING_BOTTOM - S.SOCKET_BOTTOM).toBeCloseTo(3.42, 9)
+    // The spacer's top stays 0.05 mm under the housing bottom.
+    expect(S.HOUSING_BOTTOM - S.SPACER_TOP).toBeCloseTo(0.05, 9)
   })
 
   test('the island envelope lies inside the socket footprint and clear of the socket solid', () => {
@@ -79,20 +81,38 @@ describe('the socket holds the island with the ADR 0009 stack', () => {
     }
   })
 
-  test('the ledge (clamp) is directly over the island stiffener, 0.2 mm above the switch housing it bears on', () => {
+  test('the spacer (clamp and reference surface) covers the island, and its top keeps clear of the switch housing', () => {
     const socket = solid(S.socketSolid())
-    // A thin slab just under the ledge, over the island outside the clip relief, is socket material...
-    for (const r of S.ledgeOverIsland()) {
-      const slab = mf.Manifold.cube([r[2] - r[0], r[3] - r[1], 0.05]).translate([r[0], r[1], S.LEDGE_Z])
-      expect(overlap(slab, socket) / slab.volume()).toBeGreaterThan(0.99)
-      slab.delete()
+    // A thin slab just above the stiffener, over the island outline, is socket material except for the holes.
+    const [x0, y0, x1, y1] = S.ISLAND
+    const slab = mf.Manifold.cube([x1 - x0, y1 - y0, 0.05]).translate([x0, y0, S.STIFFENER_TOP])
+    const holeArea = S.SPACER_HOLES.round.reduce((a, h) => a + Math.PI * ((h.d + S.HOLE_ALLOWANCE) / 2) ** 2, 0)
+      + S.SPACER_HOLES.slots.reduce((a, h) => a + (h.size[0] + S.HOLE_ALLOWANCE) * (h.size[1] + S.HOLE_ALLOWANCE), 0)
+    const covered = overlap(slab, socket) / 0.05
+    expect(covered).toBeGreaterThan((x1 - x0) * (y1 - y0) - holeArea - 0.5)
+    // Inside the switch cutout nothing of the socket rises above the spacer's top.
+    const c = S.CUTOUT / 2
+    const housing = mf.Manifold.cube([2 * c, 2 * c, -S.SPACER_TOP]).translate([-c, -c, S.SPACER_TOP + 1e-4])
+    expect(overlap(housing, socket)).toBeLessThan(1e-6)
+    // The holes clear the switch's protrusions (pins, centre post, fixing leg) and the socket's bosses, with
+    // the V1 pegs (ø1.80 [K-V1R]) and the clicky leg, as a PCB's holes would.
+    const protrusions: [string, [number, number], number][] = [
+      ...SWITCHES['choc-v2'].protrusions.map(p => [p.name, [-p.at[0], -p.at[1]], p.diameter] as [string, [number, number], number]),
+      ...S.CONTACTS.map((c, i) => [`boss ${i + 1}`, c, S.SOCKET_BOSS.diameter] as [string, [number, number], number]),
+      ['V1 peg', [5.5, 0], 1.8],
+      ['V1 peg', [-5.5, 0], 1.8],
+      ['V1 centre post', [0, 0], 3.2],
+      ['V1 clicky leg', [5.22, 4.2], 1.0],
+    ]
+    for (const [name, at, d] of protrusions) {
+      const rod = mf.Manifold.cylinder(S.SPACER_TOP - S.SPACER_BOTTOM + 0.2, d / 2, d / 2, 32).translate([at[0], at[1], S.SPACER_BOTTOM - 0.1])
+      expect(overlap(rod, socket), name).toBeLessThan(1e-6)
+      rod.delete()
     }
-    // ...and nothing of the socket reaches down to the stiffener (the switch housing is the datum).
-    const stiffener = solid(S.islandSolids().find(p => p.name == 'stiffener')!.shape)
-    const raised = stiffener.translate([0, 0, S.TOL.case - 0.01])
-    expect(overlap(raised, socket)).toBeLessThan(1e-6)
-    expect(S.LEDGE_Z - S.STIFFENER_TOP).toBeCloseTo(S.TOL.case, 9)
-    for (const m of [socket, stiffener, raised]) m.delete()
+    // The bosses reach into the spacer's holes, as into a PCB, and stop short of the switch.
+    expect(S.SOCKET_TOP + S.SOCKET_BOSS.height).toBeGreaterThan(S.SPACER_BOTTOM)
+    expect(S.SOCKET_TOP + S.SOCKET_BOSS.height).toBeLessThan(S.HOUSING_BOTTOM)
+    for (const m of [socket, slab, housing]) m.delete()
   })
 
   test('the adjuster (backstop) is under the hotswap socket body, and closes the gap over the whole tolerance', () => {
@@ -105,11 +125,11 @@ describe('the socket holds the island with the ADR 0009 stack', () => {
     const under = mf.Manifold.extrude([ccw(body.outline)], 0.05).translate([0, 0, S.SOCKET_BOTTOM - 0.05])
     expect(overlap(pad, under) / pad.volume()).toBeGreaterThan(0.99)
     // The range covers the socket body's place over the stack and print tolerances.
-    const reach = S.TOL.stiffened + S.TOL.socketBase + S.TOL.case + S.TOL.part
+    const reach = S.SOCKET_TOL + S.TOL.case + S.TOL.part
     expect(S.PAD_RANGE[0]).toBeLessThanOrEqual(S.SOCKET_BOTTOM - reach)
     expect(S.PAD_RANGE[1]).toBeGreaterThanOrEqual(S.SOCKET_BOTTOM + reach)
     // The keeper stays below the socket body even with every tolerance against it.
-    expect(S.KEEPER_TOP + S.TOL.case + S.TOL.part).toBeLessThan(S.SOCKET_BOTTOM - S.TOL.stiffened - S.TOL.socketBase)
+    expect(S.KEEPER_TOP + S.TOL.case + S.TOL.part).toBeLessThan(S.SOCKET_BOTTOM - S.SOCKET_TOL)
     for (const padTop of [S.PAD_RANGE[0], S.SOCKET_BOTTOM, S.PAD_RANGE[1], S.KEEPER_TOP - 0.1]) {
       const adjuster = S.adjusterManifold(mf, padTop)
       // It turns freely in the keeper's thread and clears the socket at every setting...
@@ -131,9 +151,14 @@ describe('the socket holds the island with the ADR 0009 stack', () => {
     for (const m of [socket, keeper, pad, under, adjuster, turned, lowest, ...island.map(i => i.m)]) m.delete()
   })
 
-  test('the adjuster self-locks, and a printed spring could not do its job', () => {
+  test('the adjuster stays set: insertion cannot turn it, a pull does not load it; a printed spring could not do its job', () => {
     const { adjuster, spring, deflectionMm } = backstopStrength()
+    // Insertion: 30 N on a self-locking thread does not turn it.
     expect(adjuster.selfLocking).toBe(true)
+    // Removal: the pins pull the island up against the spacer (the clamp), the face the adjuster was set to, which unloads it.
+    const { backstop, clamp } = S.retainers(180)
+    expect(clamp.bearingZ).toBeCloseTo(S.STIFFENER_TOP, 9)
+    expect(backstop.bearingZ).toBeCloseTo(S.SOCKET_BOTTOM, 9)
     // A spring would have to give at least the insertion force over the whole travel.
     expect(spring.maxForceN).toBeLessThan(spring.neededN / 10)
     // The screw gives less than 0.1 mm under 30 N.
@@ -214,17 +239,17 @@ describe('Cosmos sees the socket as socket.ts describes it', () => {
 
 describe('pin engagement (switch contacts in the hotswap socket)', () => {
   const e = S.pinEngagement(backstopStrength().deflectionMm.total)
-  test('with the adjuster set, the stiffener is against the housing: pin length less stiffener and flex', () => {
-    expect(e.set.nominal).toBeCloseTo(S.PIN_LENGTH - S.STACK.stiffener - S.STACK.flex, 9)
-    expect(e.set.nominal).toBeGreaterThanOrEqual(e.required)
-    // Print and socket-base tolerances do not enter: the adjuster takes them up.
-    expect(e.set.max - e.set.min).toBeCloseTo(2 * S.TOL.stiffened, 9)
+  test('from the stack tolerance alone (print ±0.1, steel ±0.03, flex ±0.03): at least 1.22, nominally 1.38, at most 1.56 mm', () => {
+    expect(e.stackTolerance).toBeCloseTo(0.1 + 0.03 + 0.03, 9)
+    expect(e.stack.min).toBeGreaterThanOrEqual(1.22 - 1e-9)
+    expect(e.stack.nominal).toBeCloseTo(1.38, 9)
+    expect(e.stack.max).toBeLessThanOrEqual(1.56 + 1e-9)
+    // The same band as a 1.6 mm ±10 % PCB, which the socket is drawn for (1.24 / 1.40 / 1.56).
+    expect(Math.abs(e.stack.nominal - e.pcb.nominal)).toBeLessThanOrEqual(0.02 + 1e-9)
+    expect(e.stack.max).toBeLessThanOrEqual(e.pcb.max + 1e-9)
   })
-  // Fails on the ADR 0009 stack: FR4 1.6 + flex 0.12 at JLC's ±10 % leaves 1.108 mm at the minimum
-  // (1.15 with FR4 ±0.1, flex ±0.03). No backstop can raise it; only a thinner stack can.
-  test.failing('the minimum engagement is at least 1.24 mm (a 1.76 mm PCB)', () => {
-    expect(e.set.min).toBeGreaterThanOrEqual(e.required)
-    expect(e.setPartTolerances.min).toBeGreaterThanOrEqual(e.required)
+  test('the adjuster takes up the socket-base and keeper tolerances: they do not enter the engagement', () => {
+    expect(e.stack.nominal).toBeCloseTo(S.PIN_LENGTH - (S.HOUSING_BOTTOM - S.FLEX_TOP) - S.STACK.flex, 9)
   })
 })
 
@@ -246,7 +271,8 @@ describe('the Tarn reference design', () => {
         expect(k.switch).toBe('choc-v2')
         expect(k.backstop?.bearingZ).toBeCloseTo(S.SOCKET_BOTTOM, 6)
         expect(k.backstop?.designLoadN).toBeGreaterThanOrEqual(29.4) // 3 kgf
-        expect(k.clamp?.bearingZ).toBeCloseTo(S.LEDGE_Z, 6)
+        expect(k.clamp?.bearingZ).toBeCloseTo(S.SPACER_BOTTOM, 6)
+        expect(k.seat?.stiffenerTopZ).toBeCloseTo(S.STIFFENER_TOP, 6)
         expect(k.backstop!.region.max[2]).toBeLessThan(k.clamp!.bearingZ)
         expect(k.island, k.id).toBeDefined()
       }

@@ -32,14 +32,16 @@
  * island up harder than that at every point of the stack tolerance: at least
  * 30 N over 1.2 mm of travel (PAD_RANGE), after the 30 N of each insertion has
  * pushed it down. Otherwise the island stops wherever the pins' grip balances
- * the spring, below the housing. flexureLimit() shows that a printed flexure
+ * the spring, below the spacer. flexureLimit() shows that a printed flexure
  * under the island gives about a newton at most with that travel; a printed
  * spring also creeps under a constant load. The screw has no travel under
- * load: it is set once against the switch housing, and a thread that
- * self-locks does not turn back under 30 N.
+ * load: it is set once, before any switch is in, against the spacer, and a
+ * thread that self-locks does not turn back under 30 N. Pulling a switch
+ * pulls the island against the spacer (the clamp), which unloads the screw,
+ * so neither insertion nor removal can turn it.
  */
 
-import { ADJUSTER, ISLAND, KEEPER_BOTTOM, KEEPER_PARTS, KEEPER_THICKNESS, KEEPER_TONGUES, KEEPER_TOP, LEDGE_Z, LOADS, PAD_RANGE, POST_FOOT, POSTS, TONGUE, WINDOW } from './socket'
+import { ADJUSTER, ISLAND, KEEPER_BOTTOM, KEEPER_PARTS, KEEPER_THICKNESS, KEEPER_TONGUES, KEEPER_TOP, LOADS, PAD_RANGE, POST_FOOT, POSTS, SPACER_BOTTOM, TONGUE, WINDOW } from './socket'
 
 export const STRENGTH_MPA = { inLayer: 40, acrossLayers: 15, shear: 10 } as const
 export const MIN_SAFETY = 2
@@ -224,7 +226,7 @@ export function backstopStrength(load = LOADS.insertionN): StrengthReport {
     const section = postSection(post, x0, x1, s.window)
     const e = Math.abs(s.at[1] - section.centroid)
     line(`${s.name}: post at the window (tension + bending)`, R / section.area + (R * e * section.c) / section.inertia, 'across layers')
-    const postStretch = (R * (LEDGE_Z - WINDOW.floor)) / (E * section.area)
+    const postStretch = (R * (SPACER_BOTTOM - WINDOW.floor)) / (E * section.area)
     // The keeper is rigid on its supports, so the worst support's give is an upper bound at the pad.
     deflection.windowFloors = Math.max(deflection.windowFloors ?? 0, floorDeflection)
     deflection.posts = Math.max(deflection.posts ?? 0, postStretch)

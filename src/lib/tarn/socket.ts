@@ -27,10 +27,13 @@
  * Parts of the socket (one solid per variant, generated into
  * target/key-choc-v2-tarn-island-{west,east}.step by src/model_gen/parts.ts):
  * - the plate: a 19.6 x 19.9 frame offset toward the island, 1.2 mm clip
- *   ledge around a 14.05 mm cutout, a 14.6 mm clip relief below it; its
- *   underside (LEDGE_Z, 0.2 mm above the switch housing bottom) stops the
- *   island when a switch is pulled (the clamp);
- * - posts that hang from the plate outside the island: W and P4 on the -Y
+ *   ledge around a 14.05 mm cutout, a 14.6 mm clip relief below it;
+ * - the spacer (ADR 0011): a printed slab under the switch housing, with the
+ *   holes a PCB would have (centre post, pins and socket bosses, V1 pegs and
+ *   click leg, V2 fixing leg). Its underside, 1.2 mm below the housing
+ *   bottom, is the island's reference surface and its clamp. Its top stays SPACER.topGap below the
+ *   housing, so it never lifts the switch;
+ * - posts that hang from the spacer outside the island: W and P4 on the -Y
  *   side, P3a on the +Y side, each with blind windows in its +Y face for the
  *   keeper's tongues; P1, which stops the island toward +X; and P3b, a block
  *   over the keeper's tab with the hole its snap nub clicks into.
@@ -39,27 +42,25 @@
  * The backstop is the keeper (a printed plate under the island, its four
  * tongues in the windows, held by a snap) and the adjuster: a printed
  * thumbscrew in a thread in the keeper, under the hotswap socket. Turned up
- * until it stops, it holds the island against the switch housing with no gap,
- * whatever the stack and print tolerances, and it is rigid in the load
- * direction (a thread is self-locking), so 30 N of switch insertion does not
- * move the island. A printed spring cannot do both: see strength.ts.
+ * finger-tight before any switch goes in, it holds the island against the
+ * spacer's underside with no gap, whatever the stack and print tolerances. It
+ * is rigid in the load direction (the thread is self-locking), so 30 N of
+ * switch insertion does not turn it, and a pulled switch pulls the island
+ * against the spacer, which unloads the adjuster. A printed spring cannot do
+ * this: see strength.ts.
  *
- * Assembly (docs/research/cosmos-pipeline.md, "Tarn socket"):
+ * Assembly (docs/research/cosmos-pipeline.md, "Tarn socket"), no switches in:
  * 1. Bottom plate off, case upside down. Screw each adjuster into its keeper
  *    from below until its top is flush with the keeper.
  * 2. Lay each island in its pocket, stiffener down. Links leave through the
  *    open sides.
  * 3. Lay its keeper on it, 0.75 mm toward +Y from its place, and slide it
  *    toward -Y until the nub clicks into P3b's hole.
- * 4. Turn the case over and press the switches in from the top.
- * 5. Turn the case back and, for each key, turn the adjuster's knob up until it
- *    stops: it pushes the hotswap socket onto the pins until the stiffener
- *    meets the switch housing. Finger-tight.
- * 6. Bottom plate on.
- * Switches can then be swapped from the top; the adjuster stays where it is.
- * A swapped switch can leave the island up to the backstop's give under 30 N
- * (about 0.09 mm, strength.ts) below the housing; turning the knob
- * finger-tight again closes it.
+ * 4. For each key, turn the adjuster's knob up finger-tight: it presses the
+ *    island against the spacer's underside.
+ * 5. Bottom plate on.
+ * 6. Switches in from the top, at any time. Swapping them needs no
+ *    re-adjustment.
  */
 
 import type { Manifold, ManifoldToplevel } from '@rianadon/manifold-3d'
@@ -92,39 +93,75 @@ export const PLATE_THICKNESS = 1.2
 export const CUTOUT = 14.05
 /** Relief under the plate for the clips: 14.50 over the clips [K-V2R], plus 0.05 a side. */
 export const CLIP_RELIEF = 14.6
-/** Choc V1 and V2 housing bottom below the plate top [K-V2R], [K-V1R]. The island's stiffener is held against it. */
+/** Choc V1 and V2 housing bottom below the plate top [K-V2R], [K-V1R]: where a PCB's top would be. */
 export const HOUSING_BOTTOM = -2.2
-/** Half the V2 bottom housing (13.95 [K-V2R]) plus margin: nothing of the socket rises to the housing bottom inside this. */
+/** Half the V2 bottom housing (13.95 [K-V2R]) plus margin. */
 export const HOUSING_HALF = 7.1
-/**
- * The plate's underside around the clip relief. It sits FDM_CASE above the
- * housing bottom, so the adjuster always seats the stiffener against the
- * switch housing (the switch's own datum, the plate top) and never against a
- * printed overhang. It is the clamp: a pulled switch lifts the island at most
- * this far before the island stops.
- */
-export const LEDGE_Z = -2.0
+/** The plate frame's underside outside the spacer; Cosmos builds the web to this depth (socketSize z). */
+export const FRAME_BOTTOM = -2.0
 
-/** ADR 0009: FR4 1.6 stiffener, 0.12 flex, Kailh CPG135001S30 base 1.80 [K-S30]. */
-export const STACK = { stiffener: 1.6, flex: 0.12, socketBase: 1.8 } as const
-export const STIFFENER_TOP = HOUSING_BOTTOM
+/**
+ * ADR 0011: the printed spacer. It stands in for the top 1.2 mm of a 1.6 mm
+ * PCB: its underside is `thickness` below the housing bottom, and steel 0.3 +
+ * flex 0.12 under it make the 1.62 mm stack. Its top is `topGap` below the
+ * housing bottom, so print tolerance never lifts the switch off its clips;
+ * the printed slab is therefore thickness - topGap thick.
+ */
+export const SPACER = { thickness: 1.2, topGap: 0.05 } as const
+export const SPACER_TOP = round(HOUSING_BOTTOM - SPACER.topGap)
+export const SPACER_BOTTOM = round(HOUSING_BOTTOM - SPACER.thickness)
+/**
+ * FDM holes come out small: printed holes are this much larger in diameter
+ * than the PCB hole they stand for (our assumption, unverified).
+ */
+export const HOLE_ALLOWANCE = 0.2
+/**
+ * The spacer's holes, as a PCB has them (switches.md §1.4 and its union table,
+ * read as (x, -y) and turned 180 degrees into the socket frame): `d` is the
+ * recommended PCB hole, the printed hole adds HOLE_ALLOWANCE.
+ * - centre post ø4.80 V2 [K-V2R] (V1 ø3.20): ø5.0 at (0, 0);
+ * - contacts and the socket's receptacle bosses: ø3.2 (the stiffener's boss
+ *   holes, ADR 0011; Kailh's PCB hole is ø3.00 [K-S30]) at CONTACTS;
+ * - V1 side pegs ø1.90 at (±5.5, 0) [K-V1R];
+ * - V1 clicky leg ø1.20 at (5.22, 4.20) [K-V1W];
+ * - V2 fixing leg: slot 1.5 x 2.0, long axis along y, at (5.0, 5.15) [K-V2R].
+ */
+export const SPACER_HOLES = {
+  round: [
+    { name: 'centre post', at: [0, 0] as [number, number], d: 5.0 },
+    { name: 'contact 1 and boss', at: [0, -5.9] as [number, number], d: 3.2 },
+    { name: 'contact 2 and boss', at: [-5, -3.8] as [number, number], d: 3.2 },
+    { name: 'V1 peg', at: [5.5, 0] as [number, number], d: 1.9 },
+    { name: 'V1 peg', at: [-5.5, 0] as [number, number], d: 1.9 },
+    { name: 'V1 clicky leg', at: [5.22, 4.2] as [number, number], d: 1.2 },
+  ],
+  slots: [{ name: 'V2 fixing leg', at: [5.0, 5.15] as [number, number], size: [1.5, 2.0] as [number, number] }],
+}
+/** The socket's receptacle bosses: ø2.90, about 1.35 mm proud of its base [K-S30] (switches.md §5). */
+export const SOCKET_BOSS = { diameter: 2.9, height: 1.35 } as const
+
+/** ADR 0011: steel 0.3 stiffener, 0.12 flex; Kailh CPG135001S30 base 1.80 [K-S30]. */
+export const STACK = { stiffener: 0.3, flex: 0.12, socketBase: 1.8 } as const
+export const STIFFENER_TOP = SPACER_BOTTOM
 export const FLEX_TOP = round(STIFFENER_TOP - STACK.stiffener)
 export const SOCKET_TOP = round(FLEX_TOP - STACK.flex)
 export const SOCKET_BOTTOM = round(SOCKET_TOP - STACK.socketBase)
 
 /**
- * Tolerances (±, mm).
- * - stiffened: FR4 stiffener plus flex. JLCPCB holds a stiffened area thicker
- *   than 1.0 mm to ±10 % [jlc-flex] (flex-pcb.md §1.1): ±0.172 on 1.72. That
- *   covers FR4 ±0.1 plus flex ±0.03 (0.13).
+ * Tolerances (±, mm), ADR 0011.
+ * - print: the spacer's underside below the plate top, ±0.1 for a tuned FDM
+ *   printer (assumed, unverified).
+ * - steel, flex: ±0.03 each (unverified for JLC).
  * - socketBase: CPG135001S30 base 1.80 ± 0.1 [K-S30] (switches.md §5).
  * - case, part: FDM, our assumption (unverified): ±0.2 between printed case
- *   features (ledge, window floors), ±0.1 within a small printed part.
+ *   features (spacer, window floors), ±0.1 within a small printed part.
  * - pin: Choc V2 contact length below the housing 3.00 ± 0.2 [K-V2R]. It moves
  *   the pins on any board the same way, so pin engagement is compared with a
  *   PCB build at the nominal pin length.
  */
-export const TOL = { stiffened: 0.172, socketBase: 0.1, case: 0.2, part: 0.1, pin: 0.2 } as const
+export const TOL = { print: 0.1, steel: 0.03, flex: 0.03, socketBase: 0.1, case: 0.2, part: 0.1, pin: 0.2 } as const
+/** How far the hotswap socket body's underside can sit from nominal: spacer, steel, flex and socket base. */
+export const SOCKET_TOL = round(TOL.print + TOL.steel + TOL.flex + TOL.socketBase)
 /** Choc V1/V2 contact length below the housing bottom [K-V2R], [K-V1R]. */
 export const PIN_LENGTH = 3.0
 
@@ -189,11 +226,11 @@ export const ADJUSTER = {
 } as const
 
 /**
- * The keeper's top. The socket body can sit up to TOL.stiffened +
- * TOL.socketBase lower than nominal, and the keeper up to TOL.case + TOL.part
- * higher; the keeper stays 0.1 mm below even then.
+ * The keeper's top. The socket body can sit up to SOCKET_TOL lower than
+ * nominal, and the keeper up to TOL.case + TOL.part higher; the keeper stays
+ * 0.1 mm below even then.
  */
-export const KEEPER_TOP = round(SOCKET_BOTTOM - TOL.stiffened - TOL.socketBase - TOL.case - TOL.part - 0.1, 2)
+export const KEEPER_TOP = round(SOCKET_BOTTOM - SOCKET_TOL - TOL.case - TOL.part - 0.1, 2)
 export const KEEPER_THICKNESS = 2.4
 export const KEEPER_BOTTOM = KEEPER_TOP - KEEPER_THICKNESS
 /** Tongues on the keeper's -Y edge, in the lower part of its thickness; `slide` is how far the keeper moves to engage them. */
@@ -219,8 +256,8 @@ export const TAB_CLEARANCE = 0.1
  * TOL.part off, plus 0.05 mm.
  */
 export const PAD_RANGE: [number, number] = [
-  round(SOCKET_BOTTOM - TOL.stiffened - TOL.socketBase - TOL.case - TOL.part - 0.05, 3),
-  round(SOCKET_BOTTOM + TOL.stiffened + TOL.socketBase + TOL.case + TOL.part + 0.05, 3),
+  round(SOCKET_BOTTOM - SOCKET_TOL - TOL.case - TOL.part - 0.05, 3),
+  round(SOCKET_BOTTOM + SOCKET_TOL + TOL.case + TOL.part + 0.05, 3),
 ]
 /** Pad top to knob top. With the pad at its highest the knob stays 0.2 mm under the keeper. */
 export const ADJUSTER_LENGTH = round(PAD_RANGE[1] - KEEPER_BOTTOM + 0.2, 3)
@@ -234,8 +271,8 @@ export const ADJUSTER_LENGTH = round(PAD_RANGE[1] - KEEPER_BOTTOM + 0.2, 3)
 export const FOOTPRINT_RECT: Rect = [-10.4, -10.5, 9.2, 9.4]
 export const FOOTPRINT: XY = [round(FOOTPRINT_RECT[2] - FOOTPRINT_RECT[0]), round(FOOTPRINT_RECT[3] - FOOTPRINT_RECT[1])]
 export const FOOTPRINT_CENTRE: XY = [round((FOOTPRINT_RECT[0] + FOOTPRINT_RECT[2]) / 2), round((FOOTPRINT_RECT[1] + FOOTPRINT_RECT[3]) / 2)]
-/** Frame depth (Cosmos socketSize z): the plate and the clip relief down to the ledge. Cosmos builds the web to this depth. */
-export const FRAME_DEPTH = -LEDGE_Z
+/** Frame depth (Cosmos socketSize z): Cosmos builds the web to this depth; the spacer and the posts hang below it. */
+export const FRAME_DEPTH = -FRAME_BOTTOM
 /** The variants, as Cosmos names them. 'Island East' turns the socket 180 degrees. */
 export const VARIANTS = ['Island West', 'Island East'] as const
 
@@ -327,16 +364,23 @@ const rectOutline = ([x0, y0, x1, y1]: Rect): XY[] => [[x0, y0], [x1, y0], [x1, 
 /** SOD-123 with its leads: 3.85 x 1.8 x 1.35 max (Diodes Inc. SOD-123 outline, unverified for the part JLC fits), at coupon.py CHOC_DIODE (3.45, -0.5) turned 90 degrees. */
 export const DIODE: { rect: Rect; height: number } = { rect: [3.45 - 0.9, -0.5 - 1.925, 3.45 + 0.9, -0.5 + 1.925], height: 1.35 }
 
+/** A circle as a polygon (counter-clockwise), for prisms. */
+export function circleOutline([cx, cy]: XY, r: number, n = 32): XY[] {
+  return Array.from({ length: n }, (_, i) => [cx + r * Math.cos((2 * Math.PI * i) / n), cy + r * Math.sin((2 * Math.PI * i) / n)] as XY)
+}
+
 /**
- * The island with the ADR 0009 stack, as the checks see it: stiffener and flex
+ * The island with the ADR 0011 stack, as the checks see it: stiffener and flex
  * over the whole outline (the real stiffener is smaller), the hotswap socket
- * body, and the diode. Everything else on the copper side is copper.
+ * body with its two receptacle bosses (which rise through the island into the
+ * spacer's holes), and the diode. Everything else on the copper side is copper.
  */
 export function islandEnvelope(): Prism[] {
   return [
     { name: 'stiffener', outline: rectOutline(ISLAND), zMin: FLEX_TOP, zMax: STIFFENER_TOP },
     { name: 'flex', outline: rectOutline(ISLAND), zMin: SOCKET_TOP, zMax: FLEX_TOP },
     { name: 'hotswap socket', outline: SOCKET_OUTLINE, zMin: SOCKET_BOTTOM, zMax: SOCKET_TOP },
+    ...CONTACTS.map((c, i) => ({ name: `socket boss ${i + 1}`, outline: circleOutline(c, SOCKET_BOSS.diameter / 2), zMin: SOCKET_TOP - 0.01, zMax: round(SOCKET_TOP + SOCKET_BOSS.height) })),
     { name: 'diode', outline: rectOutline(DIODE.rect), zMin: SOCKET_TOP - DIODE.height, zMax: SOCKET_TOP },
   ]
 }
@@ -423,9 +467,9 @@ export function retainers(switchRotation: number): { backstop: Retainer; clamp: 
       part: 'keepersStl',
     },
     clamp: {
-      kind: 'ledge',
-      bearingZ: LEDGE_Z,
-      region: boxToSwitchFrame({ min: [FX0, FY0, LEDGE_Z], max: [FX1, FY1, -PLATE_THICKNESS] }, switchRotation),
+      kind: 'printed spacer',
+      bearingZ: SPACER_BOTTOM,
+      region: boxToSwitchFrame({ min: [FX0, FY0, SPACER_BOTTOM], max: [FX1, FY1, SPACER_TOP] }, switchRotation),
       designLoadN: LOADS.removalN,
       part: 'caseStl',
     },
@@ -440,46 +484,34 @@ export function keeperBounds(): Box3 {
   }
 }
 
-/** The part of the ledge directly over the island: the plate ring outside the clip relief, inside the island outline. */
-export function ledgeOverIsland(): Rect[] {
-  const r = CLIP_RELIEF / 2
-  const [x0, y0, x1, y1] = ISLAND
-  return [
-    [x0, y0, -r, y1], // -X strip
-    [-r, y0, x1, -r], // -Y strip
-  ].filter(q => q[2] > q[0] && q[3] > q[1]) as Rect[]
-}
-
 /**
- * How far the switch pins reach into the hotswap socket's base, min /
- * nominal / max over the stack tolerance, with the pin length at its nominal
- * 3.00 (TOL.pin moves every board's pins alike). The adjuster puts the
- * stiffener against the switch housing, so this is PIN_LENGTH - (stiffener +
- * flex) whatever the print and socket-base tolerances.
- * - set: after the adjuster is set, with JLCPCB's ±10 % on the stiffened area.
- * - setPartTolerances: the same with FR4 ±0.1 and flex ±0.03 taken separately
- *   (the figures in the keeper-fix brief; JLC's stiffened-area figure is the
- *   larger, so `set` is the one to meet).
- * - afterSwap: after a switch is swapped without turning the knob again. The
- *   pins' grip can hold the island where 30 N of insertion pushed it, the
- *   backstop's give under 30 N (strength.ts) below the housing.
+ * How far the switch pins reach into the hotswap socket's base, with the pin
+ * length at its nominal 3.00 (TOL.pin moves every board's pins alike). The
+ * adjuster holds the island against the spacer's underside, so this is
+ * PIN_LENGTH - (spacer + steel + flex below the housing bottom).
+ * - stack: min / nominal / max over the stack tolerance alone (ADR 0011):
+ *   spacer print ±0.1, steel ±0.03, flex ±0.03.
+ * - underInsertion: the same while 30 N of insertion presses the backstop,
+ *   which gives deflectionAt30N (strength.ts). The pins' grip can hold the
+ *   island there until the switch is next pulled, which brings it back against
+ *   the spacer.
  * - pcb: the same on a 1.6 mm PCB and its ±10 % (what the socket is drawn
- *   for [K-S30]): 1.40 nominal, 1.24 on a 1.76 mm board, the `required` minimum.
+ *   for [K-S30]): 1.24 / 1.40 / 1.56.
  */
 export function pinEngagement(deflectionAt30N = 0) {
-  const above = STACK.stiffener + STACK.flex
-  const range = (tol: number, less = 0) => ({
-    min: round(PIN_LENGTH - above - tol - less, 3),
-    nominal: round(PIN_LENGTH - above - less, 3),
-    max: round(PIN_LENGTH - above + tol - less, 3),
+  const below = SPACER.thickness + STACK.stiffener + STACK.flex
+  const tol = TOL.print + TOL.steel + TOL.flex
+  const range = (less = 0) => ({
+    min: round(PIN_LENGTH - below - tol - less, 3),
+    nominal: round(PIN_LENGTH - below - less, 3),
+    max: round(PIN_LENGTH - below + tol - less, 3),
   })
   return {
-    set: range(TOL.stiffened),
-    setPartTolerances: range(0.1 + 0.03),
-    afterSwap: range(TOL.stiffened, deflectionAt30N),
+    stack: range(),
+    stackTolerance: round(tol, 3),
+    underInsertion: range(deflectionAt30N),
     deflectionAt30N: round(deflectionAt30N, 3),
-    pcb: { nominal: round(PIN_LENGTH - 1.6, 3), thickest: round(PIN_LENGTH - 1.6 * 1.1, 3) },
-    required: 1.24,
+    pcb: { min: round(PIN_LENGTH - 1.6 * 1.1, 3), nominal: round(PIN_LENGTH - 1.6, 3), max: round(PIN_LENGTH - 1.6 * 0.9, 3) },
   }
 }
 
@@ -504,7 +536,7 @@ export interface IslandSpec {
 
 /**
  * The spec 0.3 `island` fields that do not depend on the key's pose, in the
- * island frame: the outline the harness must stay inside, the FR4
+ * island frame: the outline the harness must stay inside, the steel
  * stiffener's top and bottom, and the link openings per side (intervals
  * along that side's edge).
  */
@@ -544,18 +576,31 @@ function windowCut(face: number, x0: number, x1: number): Solid {
   return prismX([[back, WINDOW.floor], [outside, WINDOW.floor], [outside, WINDOW.top + WINDOW.depth + 0.5], [face, WINDOW.top + WINDOW.depth], [back, WINDOW.top]], x0, x1)
 }
 
-/** The socket: plate with the switch cutout and clip relief, and the posts. */
+/** The spacer's holes as solids through the spacer (and a little past it). */
+function spacerHoles(): Shape3D {
+  const z0 = SPACER_BOTTOM - 0.5, h = SPACER_TOP - SPACER_BOTTOM + 1
+  let holes: Shape3D | null = null
+  const add = (s: Shape3D) => (holes = holes ? holes.fuse(s) : s)
+  for (const hole of SPACER_HOLES.round) add(makeCylinder((hole.d + HOLE_ALLOWANCE) / 2, h, [hole.at[0], hole.at[1], z0], [0, 0, 1]))
+  for (const slot of SPACER_HOLES.slots) {
+    const [w, l] = slot.size.map(v => v + HOLE_ALLOWANCE)
+    add(box([slot.at[0] - w / 2, slot.at[1] - l / 2, slot.at[0] + w / 2, slot.at[1] + l / 2], z0, z0 + h))
+  }
+  return holes!
+}
+
+/**
+ * The socket: the plate with the switch cutout and clip relief, the spacer
+ * under the switch housing with its holes, and the posts hanging from it.
+ */
 export function socketSolid(): Shape3D {
-  let shape: Shape3D = box(FOOTPRINT_RECT, LEDGE_Z, PLATE_TOP)
-    .cut(box([-CUTOUT / 2, -CUTOUT / 2, CUTOUT / 2, CUTOUT / 2], LEDGE_Z - 1, PLATE_TOP + 1))
-    .cut(box([-CLIP_RELIEF / 2, -CLIP_RELIEF / 2, CLIP_RELIEF / 2, CLIP_RELIEF / 2], LEDGE_Z - 1, -PLATE_THICKNESS))
+  let shape: Shape3D = box(FOOTPRINT_RECT, SPACER_BOTTOM, PLATE_TOP)
+    .cut(box([-CUTOUT / 2, -CUTOUT / 2, CUTOUT / 2, CUTOUT / 2], SPACER_TOP, PLATE_TOP + 1))
+    .cut(box([-CLIP_RELIEF / 2, -CLIP_RELIEF / 2, CLIP_RELIEF / 2, CLIP_RELIEF / 2], SPACER_TOP, -PLATE_THICKNESS))
+    .cut(spacerHoles())
   for (const post of Object.values(POSTS)) {
-    // Under the switch housing the post stops 0.2 mm short of the housing bottom, so it can never lift the switch.
-    const [x0, y0, x1, y1] = post.rect
-    let solid: Shape3D = box(post.rect, post.bottom, HOUSING_BOTTOM - 0.2)
-    const outside: Rect[] = [[x0, y0, Math.min(x1, -HOUSING_HALF), y1], [Math.max(x0, HOUSING_HALF), y0, x1, y1], [x0, y0, x1, Math.min(y1, -HOUSING_HALF)], [x0, Math.max(y0, HOUSING_HALF), x1, y1]]
-    for (const r of outside) if (r[2] > r[0] && r[3] > r[1]) solid = solid.fuse(box(r, HOUSING_BOTTOM - 0.3, LEDGE_Z))
-    for (const [a, b] of post.windows) solid = solid.cut(windowCut(y1, a, b))
+    let solid: Shape3D = box(post.rect, post.bottom, SPACER_BOTTOM + 0.01)
+    for (const [a, b] of post.windows) solid = solid.cut(windowCut(post.rect[3], a, b))
     shape = shape.fuse(solid)
   }
   const [hx, hy] = SNAP.nub.at

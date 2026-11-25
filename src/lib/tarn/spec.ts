@@ -25,9 +25,9 @@
  *   same on both halves, because the left pose already describes an unmirrored
  *   switch.
  * - Island frame (spec 0.3 `island.pose`, Tarn sockets only): the datasheet
- *   frame moved down to the top face of the island's FR4 stiffener, i.e.
+ *   frame moved down to the top face of the island's steel stiffener, i.e.
  *   pose · Rz(switchRotation) · T(0, 0, stiffenerTopZ) with stiffenerTopZ the
- *   switch housing's underside (-2.2 for Choc). The island is the same outline
+ *   printed spacer's underside (-3.4 on choc-v2-tarn, ADR 0011). The island is the same outline
  *   in it on every key; `variant` only says which way the socket's posts are
  *   turned.
  */

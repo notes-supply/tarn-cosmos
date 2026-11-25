@@ -27,6 +27,7 @@ import {
   ADJUSTER,
   ADJUSTER_LENGTH,
   boxToSwitchFrame,
+  circleOutline,
   FOOTPRINT_RECT,
   ISLAND,
   islandEnvelope,
@@ -37,6 +38,7 @@ import {
   type Prism,
   SOCKET_ID,
   socketTurn,
+  STACK as TARN_STACK,
   TONGUE,
 } from './socket'
 import { type HalfContext, isSpecKey, type Pose, type SpecHalf } from './spec'
@@ -236,33 +238,35 @@ export function measureSeats(mf: ManifoldToplevel, ctx: HalfContext, half: SpecH
     function tarnStack(): StackResult {
       const rot = key.switchRotation!
       const prisms = islandEnvelope()
-      const pins = facts!.protrusions.map(p => {
-        const [x, y] = rotateXY(p.at, rot)
-        const r = p.diameter / 2
-        return { name: p.name, box: { min: [x - r, y - r, p.tipZ], max: [x + r, y + r, facts!.housingBottomZ] } as Box3 }
-      })
+      // Round, as they are: they pass through round holes in the spacer.
+      const pins = facts!.protrusions.map(p => ({
+        name: p.name,
+        prism: { name: p.name, outline: circleOutline(rotateXY(p.at, rot), p.diameter / 2), zMin: p.tipZ, zMax: facts!.housingBottomZ - PLANE_GAP_MM } as Prism,
+      }))
       const interferingParts: Record<string, number> = {}
       const frame = socketPose(key)
       for (const p of prisms) {
-        // Shrunk at both ends: the stiffener bears on the switch housing and the socket body on the adjuster.
+        // Shrunk at both ends: the stiffener bears on the spacer and the socket body on the adjuster.
         const solid = prismSolid(mf, p, frame, PLANE_GAP_MM)
         const v = overlapVolume(solid, obstacles)
         solid.delete()
         if (v > INTERFERENCE_MM3) interferingParts[p.name] = r3(v)
       }
       for (const b of pins) {
-        const v = inside({ min: b.box.min, max: [b.box.max[0], b.box.max[1], b.box.max[2] - PLANE_GAP_MM] })
+        const solid = prismSolid(mf, b.prism, pose)
+        const v = overlapVolume(solid, obstacles)
+        solid.delete()
         if (v > INTERFERENCE_MM3) interferingParts[b.name] = r3(v)
       }
       const socket = prisms.find(p => p.name == 'hotswap socket')!
-      const bottomZ = Math.min(...prisms.map(p => p.zMin), ...pins.map(b => b.box.min[2]))
+      const bottomZ = Math.min(...prisms.map(p => p.zMin), ...pins.map(b => b.prism.zMin))
       const fits = Object.keys(interferingParts).length == 0
       // Overhang past the socket's footprint, which is offset to the island (island frame).
       const [fx0, fy0, fx1, fy1] = FOOTPRINT_RECT
       const overhang = Math.max(0, ...prisms.flatMap(p => p.outline.flatMap(([x, y]) => [fx0 - x, x - fx1, fy0 - y, y - fy1])))
       return {
         stack: 'tarn island',
-        stiffener: STACK.stiffeners[0].thickness,
+        stiffener: TARN_STACK.stiffener,
         bottomZ: r3(bottomZ),
         socketBottomZ: r3(socket.zMin),
         interferingParts,
@@ -276,6 +280,9 @@ export function measureSeats(mf: ManifoldToplevel, ctx: HalfContext, half: SpecH
     }
     report.keys.push({ id: key.id, socket: key.socket, switchRotation: key.switchRotation, clear, clearIsLowerBound: hitTop == null, stacks })
   })
+  // The stiffeners actually tested (the Tarn socket has its own).
+  const tested = [...new Set(report.keys.flatMap(k => k.stacks.map(s => s.stiffener)))]
+  if (tested.length) report.stiffeners = tested
   for (const t of report.stiffeners) {
     const results = report.keys.flatMap(k => k.stacks.filter(s => s.stiffener == t))
     report.fits[String(t)] = results.filter(s => s.fits).length

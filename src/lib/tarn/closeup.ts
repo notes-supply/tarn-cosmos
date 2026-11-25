@@ -4,7 +4,7 @@
  * in the key's socket frame (socket.ts), so the pictures read the same on
  * every key.
  *
- * Colours: case blue-grey, keeper orange, adjuster magenta, FR4 stiffener
+ * Colours: case blue-grey, spacer teal, keeper orange, adjuster magenta, steel stiffener
  * green, flex amber, hotswap socket and diode near black, switch grey, keycap
  * off-white.
  */
@@ -12,11 +12,12 @@
 import type { Manifold, ManifoldToplevel, Mat4 } from '@rianadon/manifold-3d'
 import { Matrix4 } from 'three/src/math/Matrix4.js'
 import { render, type RenderItem, type RGB } from './render'
-import { ADJUSTER } from './socket'
+import { ADJUSTER, CLIP_RELIEF, CONTACTS, SPACER_BOTTOM, SPACER_TOP } from './socket'
 import { manifoldMesh, toManifold, type TriMesh } from './solids'
 
 export const CLOSEUP_COLORS: Record<string, RGB> = {
   case: [150, 170, 200],
+  spacer: [60, 175, 185],
   keeper: [235, 140, 50],
   adjuster: [200, 60, 160],
   stiffener: [70, 150, 80],
@@ -90,15 +91,23 @@ export function socketCloseups(mf: ManifoldToplevel, input: CloseupInput, size =
   const inverse = input.pose.clone().invert()
   const local = input.caseBody.transform(inverse.elements as unknown as Mat4)
   const region = mf.Manifold.cube([REGION.max[0] - REGION.min[0], REGION.max[1] - REGION.min[1], REGION.max[2] - REGION.min[2]]).translate(REGION.min as [number, number, number])
-  const caseLocal = local.intersect(region)
+  const caseRegion = local.intersect(region)
   local.delete()
   region.delete()
+  // The printed spacer (the case under the clip relief, between its faces) in its own colour.
+  const r = CLIP_RELIEF / 2
+  const spacerBox = mf.Manifold.cube([2 * r, 2 * r, SPACER_TOP - SPACER_BOTTOM]).translate([-r, -r, SPACER_BOTTOM])
+  const spacerLocal = caseRegion.intersect(spacerBox)
+  const caseLocal = caseRegion.subtract(spacerBox)
+  caseRegion.delete()
+  spacerBox.delete()
   const inRegion = (x: number, y: number, z: number) => [x, y, z].every((v, i) => v >= REGION.min[i] && v <= REGION.max[i])
   const switchLocal = input.switchMesh ? filterTriangles(toLocal(input.switchMesh, inverse), inRegion) : null
   const keycapLocal = input.keycapMesh ? filterTriangles(toLocal(input.keycapMesh, inverse), inRegion) : null
 
   const solids: { name: string; solid: Manifold }[] = [
     { name: 'case', solid: caseLocal },
+    { name: 'spacer', solid: spacerLocal },
     { name: 'keeper', solid: toManifold(mf, input.keeper) },
     { name: 'adjuster', solid: toManifold(mf, input.adjuster) },
     ...input.island.map(i => ({ name: i.name, solid: toManifold(mf, i.mesh) })),
@@ -138,17 +147,17 @@ export function socketCloseups(mf: ManifoldToplevel, input: CloseupInput, size =
       name: 'section-x',
       description: `Section through the adjuster's axis (x = ${
         ADJUSTER.at[0]
-      } mm, socket frame), seen from -X (-Y, the hotswap socket side, is on the right): keycap, switch, plate, the stiffener against the switch housing, flex, the hotswap socket on the adjuster's pad, the adjuster's thread in the keeper and its knob below, W and P4 at the far right.`,
+      } mm, socket frame), seen from -X (-Y, the hotswap socket side, is on the right): keycap, switch, plate, the printed spacer (teal) under the switch housing with the centre post's hole, the steel stiffener held against the spacer's underside, flex, the hotswap socket on the adjuster's pad, the adjuster's thread in the keeper and its knob below, W and P4 at the far right.`,
       items: items({ axis: 0, at: ADJUSTER.at[0] }),
       look: [1, 0, 0],
       up: [0, 0, 1],
     },
     {
       name: 'section-y',
-      description: `Section through the adjuster's axis (y = ${
-        ADJUSTER.at[1]
-      } mm), seen from -Y (+X on the right): the ledge 0.2 mm over the island's -X strip, the stiffener against the switch housing, the hotswap socket on the adjuster's pad, the thread in the keeper, the knob; P3a and P3b behind.`,
-      items: items({ axis: 1, at: ADJUSTER.at[1] }),
+      description: `Section through a switch contact (y = ${
+        CONTACTS[0][1]
+      } mm), seen from -Y (+X on the right): the pin going down through the spacer's hole into the hotswap socket, whose receptacle boss rises through the island into the same hole; the stiffener against the spacer's underside; the adjuster's pad and thread; P3a and P3b behind.`,
+      items: items({ axis: 1, at: CONTACTS[0][1] }),
       look: [0, 1, 0],
       up: [0, 0, 1],
     },
@@ -163,6 +172,14 @@ export function socketCloseups(mf: ManifoldToplevel, input: CloseupInput, size =
       name: 'below-no-keeper',
       description: 'From below without the keeper and adjuster: the island in its pocket, the windows in W, P4 and P3a, the snap hole in P3b, and the four open sides where links leave.',
       items: items(null, ['keeper', 'adjuster', 'keycap'], false),
+      look: [0.35, 0.45, 1],
+      up: [0, 1, 0],
+    },
+    {
+      name: 'below-spacer',
+      description:
+        "From below without the keeper, adjuster and island: the spacer's underside (the island's reference surface) with its holes for the centre post, the contacts and the socket's bosses, the V1 pegs and clicky leg and the V2 fixing leg, and the switch's pins through them.",
+      items: items(null, ['keeper', 'adjuster', 'keycap', ...input.island.map(i => i.name)], false),
       look: [0.35, 0.45, 1],
       up: [0, 1, 0],
     },
