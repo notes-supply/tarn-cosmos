@@ -128,8 +128,8 @@ export function solidsOf(shape: AnyShape): AnyShape[] {
   return out
 }
 
-/** A Manifold from a triangle mesh whose shared edges have bit-identical vertices (as OpenCascade triangulates them). */
-export function toManifold(mf: ManifoldToplevel, mesh: TriMesh): Manifold {
+/** Merge vertices with bit-identical float32 positions, as STL readers do. */
+function byPosition(mesh: TriMesh) {
   const ids = new Map<string, number>()
   const verts: number[] = []
   const p = mesh.positions
@@ -144,6 +144,56 @@ export function toManifold(mf: ManifoldToplevel, mesh: TriMesh): Manifold {
     }
     remap[i] = j
   }
+  return { verts, remap }
+}
+
+/** Drop triangles that have zero area once vertices are merged by float32 position (two corners in the same place). */
+export function withoutDegenerate(mesh: TriMesh): TriMesh {
+  const { remap } = byPosition(mesh)
+  const keep: number[] = []
+  for (let t = 0; t < mesh.indices.length; t += 3) {
+    const a = remap[mesh.indices[t]], b = remap[mesh.indices[t + 1]], c = remap[mesh.indices[t + 2]]
+    if (a != b && b != c && a != c) keep.push(mesh.indices[t], mesh.indices[t + 1], mesh.indices[t + 2])
+  }
+  return { positions: mesh.positions, indices: Uint32Array.from(keep) }
+}
+
+/**
+ * Edge statistics of a mesh as an STL reader sees it (vertices merged by
+ * position). A closed, consistently oriented surface has no unbalanced edges.
+ * Pinched edges are balanced edges with four or more triangles: places where
+ * the solid touches itself along a line.
+ */
+export function stlTopology(mesh: TriMesh) {
+  const { remap } = byPosition(mesh)
+  let degenerate = 0
+  const uses = new Map<string, { forward: number; backward: number }>()
+  for (let t = 0; t < mesh.indices.length; t += 3) {
+    const v = [remap[mesh.indices[t]], remap[mesh.indices[t + 1]], remap[mesh.indices[t + 2]]]
+    if (v[0] == v[1] || v[1] == v[2] || v[0] == v[2]) {
+      degenerate++
+      continue
+    }
+    for (let e = 0; e < 3; e++) {
+      const a = v[e], b = v[(e + 1) % 3]
+      const key = a < b ? `${a},${b}` : `${b},${a}`
+      const u = uses.get(key) ?? { forward: 0, backward: 0 }
+      if (a < b) u.forward++
+      else u.backward++
+      uses.set(key, u)
+    }
+  }
+  let unbalancedEdges = 0, pinchedEdges = 0
+  for (const u of uses.values()) {
+    if (u.forward != u.backward) unbalancedEdges++
+    else if (u.forward > 1) pinchedEdges++
+  }
+  return { degenerate, unbalancedEdges, pinchedEdges }
+}
+
+/** A Manifold from a triangle mesh whose shared edges have bit-identical vertices (as OpenCascade triangulates them). */
+export function toManifold(mf: ManifoldToplevel, mesh: TriMesh): Manifold {
+  const { verts, remap } = byPosition(mesh)
   const tris: number[] = []
   for (let t = 0; t < mesh.indices.length; t += 3) {
     const a = remap[mesh.indices[t]], b = remap[mesh.indices[t + 1]], c = remap[mesh.indices[t + 2]]
@@ -182,7 +232,10 @@ export const VOID_FILL_MM = 0.01
 
 export interface Fused {
   manifold: Manifold
+  /** The union's triangles for the STL, without triangles that float32 rounding collapses. */
   mesh: TriMesh
+  /** The STL as a position-merging reader sees it (stlTopology). */
+  stl: ReturnType<typeof stlTopology>
   /** Solids that went into the union. */
   solids: number
   /** Internal voids filled after the union, and their total volume (mm^3, negative). */
@@ -216,10 +269,11 @@ export function fuseShapes(mf: ManifoldToplevel, shapes: AnyShape[], opts: MeshO
   const manifold = mf.Manifold.compose(kept)
   const voidVolume = voids.reduce((v, c) => v + c.volume(), 0)
   pieces.forEach(p => p.delete())
-  const mesh = manifoldMesh(manifold)
+  const mesh = withoutDegenerate(manifoldMesh(manifold))
   return {
     manifold,
     mesh,
+    stl: stlTopology(mesh),
     solids: solids.length,
     voidsFilled: voids.length,
     voidVolume,

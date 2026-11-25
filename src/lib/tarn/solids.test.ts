@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, test } from 'bun:test'
 import { setup } from '../../model_gen/node-model'
 import { type Box3, contactsInSwitchFrame, matchContacts, rotateXY, switchFacts } from './harness'
 import { measureSeats, poseMatrix } from './seat'
-import { buildCaseParts, type CaseParts, type Fused, fuseShapes, inFrame, manifoldKernel, shapeMesh, signedVolume, switchMesh, type TriMesh } from './solids'
+import { buildCaseParts, type CaseParts, type Fused, fuseShapes, inFrame, manifoldKernel, manifoldMesh, shapeMesh, signedVolume, switchMesh, type TriMesh } from './solids'
 import { buildSpec, type HalfContext, isSpecKey, type SpecHalf } from './spec'
 
 /** The Cosmos default layout with Choc V2 and with MX sockets (designs/ in the Tarn repo). */
@@ -99,7 +99,13 @@ describe.each([['Choc V2', DEFAULT_CHOC_V2], ['MX', DEFAULT_MX]])('%s: fused cas
       const { body, parts } = built[side]
       expect(body.components, `${side} components`).toBe(1)
       expect(body.manifold.status(), side).toBe('NoError')
-      expect(closedAndOriented(body.mesh), `${side} mesh closed and oriented`).toBe(true)
+      // Manifold's own mesh is a 2-manifold; read back by position, as STL readers do, it is closed
+      // and oriented, with no zero-area triangles. Only a few edges where two Cosmos solids touch
+      // along a line carry four triangles.
+      expect(closedAndOriented(manifoldMesh(body.manifold)), `${side} Manifold mesh closed and oriented`).toBe(true)
+      expect(body.stl.degenerate, `${side} STL degenerate triangles`).toBe(0)
+      expect(body.stl.unbalancedEdges, `${side} STL open or misoriented edges`).toBe(0)
+      expect(body.stl.pinchedEdges, `${side} STL pinched edges`).toBeLessThan(20)
       expect(signedVolume(body.mesh), `${side} STL volume`).toBeCloseTo(body.volume, 0)
       // A union holds at least its largest part and at most all of them (plus the float-noise voids it fills).
       const volumes = parts.body.map(p => signedVolume(shapeMesh(p.shape, EXPORT_MESH)))

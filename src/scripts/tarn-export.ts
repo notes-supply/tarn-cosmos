@@ -197,11 +197,13 @@ async function main() {
           genus: f!.genus,
           voidsFilled: f!.voidsFilled,
           voidVolumeMm3: Math.round(f!.voidVolume * 1e6) / 1e6,
+          stl: f!.stl,
           ms: f!.ms,
         }]),
       )
       for (const [name, f] of Object.entries(fused[ctx.side]) as [string, any][]) {
         if (f.components != 1) warnings.push(`${ctx.side}: fused ${name} has ${f.components} components, not 1`)
+        if (f.stl.unbalancedEdges) warnings.push(`${ctx.side}: fused ${name} STL has ${f.stl.unbalancedEdges} open or misoriented edges`)
       }
       const meshes = { body: fuse.body.mesh, plate: fuse.plate?.mesh ?? null, holder: fuse.holder?.mesh ?? null }
 
