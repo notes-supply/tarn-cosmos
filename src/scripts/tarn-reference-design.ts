@@ -58,7 +58,7 @@ export const CHANGES: Change[] = [
     from: '-',
     to: 'Island West on finger columns c0-c2 and the thumb keys; Island East on c3 (ring), c4 (pinky) and thumbs-c0-r1',
     why:
-      "The island is off-centre, so the socket reaches 10.4 mm from the switch centre on the island side and 9.2 mm on the other. Its narrow side has to face a neighbour whose case surface climbs steeply toward the key: c3 faces c4, which sits 12.5 mm higher (the default layout's pinky-wall clearance problem), so c3 and c4 are East and c0-c2 West. thumbs-c0-r1 is East so its socket clears thumbs-c2-r1's. Chosen by running Cosmos's checks, the island and keeper checks and the keycap clearance for both variants of every column and thumb key.",
+      "The island is off-centre, so the socket reaches 10.4 mm from the switch centre on the island side and 9.2 mm on the other. Two wide sides must not meet across a steep gap, or the web between them climbs under the lower key's keycaps. c4 sits 12.5 mm above c3 (the default layout's pinky-wall clearance problem): c3's wide side faces c4, so the web starts further from c3's keycaps, and c4's narrow side faces back. c2 sits 5.7 mm below both neighbours on the number row: its wide side faces c1, whose narrow side faces back, and its narrow side faces c3's narrow side. thumbs-c0-r1 is East so its socket clears thumbs-c2-r1's. Chosen by running Cosmos's checks, the island and keeper checks and the keycap clearance for both variants of every column and thumb key.",
     apply: c => {
       for (const col of [0.5, 1.5]) {
         const cl = column(fingers(c), col)
