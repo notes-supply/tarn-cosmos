@@ -65,6 +65,14 @@ export const J3_CLEARANCE = 0.5
 /** The plug's wires leave the mating face toward -Y: the relief runs this far past the board's front edge. */
 export const J3_WIRE_RUN = 12
 
+/**
+ * The assembled board as an obstacle for the adjusters' access lines (board
+ * frame): the PCB with everything on it up to the USB shell's top (4.86
+ * [mcu-if usb_c]) and the NINA module (3.83), J1 reaching 1.3 past the USB
+ * edge, and J3 with its mated plug.
+ */
+export const BOARD_ENVELOPE: Box[] = [{ min: [BOARD.min[0], BOARD.min[1], 0], max: [BOARD.max[0], 1.3, 5.0] }, J3]
+
 /** NINA-B306 antenna keep-out [mcu-if antenna_keepout], from the board top to the module top (1.6 + 2.23 [nina-ds]). */
 export const ANTENNA: Box = { min: [11.75, -27, 1.6], max: [14.95, -19, 3.83] }
 /** [nina-sim]: 10 mm to the casing, plastic included. */

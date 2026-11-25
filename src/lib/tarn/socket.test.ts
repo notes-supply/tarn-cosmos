@@ -11,9 +11,10 @@ import { beforeAll, describe, expect, test } from 'bun:test'
 import { Vector3 } from 'three/src/math/Vector3.js'
 import { setup } from '../../model_gen/node-model'
 import { referenceDesign } from '../../scripts/tarn-reference-design'
+import { applyAccessHoles, planHalfAccess } from './accessPlan'
 import { cosmosChecks } from './checks'
 import { CONTACT_SEARCH_MM, CONTACT_TOLERANCE_MM, SWITCHES } from './harness'
-import { checkKeepers, measureSeats, reservedSolid, socketPose } from './seat'
+import { checkKeepers, measureSeats, socketPose } from './seat'
 import * as S from './socket'
 import { buildCaseParts, fuseShapes, inFrame, manifoldKernel, shapeMesh, switchMesh, tarnKeepers, toManifold } from './solids'
 import { buildSpec, islandMatrix, isSpecKey, keyIds, rowMajor } from './spec'
@@ -159,12 +160,20 @@ describe('the socket holds the island with the ADR 0011 stack', () => {
     expect(overlap(key, adjuster)).toBeLessThan(1e-6)
     // ...and turned by a twelfth of a turn it runs into the socket's flats, so it drives the adjuster.
     const turned = S.hexKeyManifold(mf, S.SOCKET_BOTTOM, 30)
-    expect(overlap(turned, adjuster)).toBeGreaterThan(0.5)
+    expect(overlap(turned, adjuster)).toBeGreaterThan(0.2)
     // Across corners the largest key (ISO 2936 e max 2.82) is inside the socket's corners.
     expect(S.HEX.across / Math.cos(Math.PI / 6)).toBeGreaterThan(S.HEX.key.e[1])
-    // At least 1.2 x the key size deep, and shorter than the adjuster, so the pad end stays solid.
-    expect(S.HEX.depth).toBeGreaterThanOrEqual(1.2 * 2.5)
+    // As deep as the key's size (ISO 4762's M3 socket: 1.3 mm in steel), the ball-end key's ball just reaching the floor,
+    // and shorter than the adjuster, so the pad end stays solid.
+    expect(S.HEX.depth).toBeGreaterThanOrEqual(2.5)
+    expect(S.BALL_END.centreDepth + S.BALL_END.ballRadius).toBeCloseTo(S.HEX.depth, 6)
     expect(S.HEX.depth).toBeLessThan(S.ADJUSTER_LENGTH - S.ADJUSTER.pad.height)
+    // A ball-end key (BALL_END) turns in it up to its rated angle, whichever way it leans: its neck clears the mouth's chamfer.
+    for (let az = 0; az < 360; az += 30) {
+      const ball = S.ballKeyManifold(mf, S.SOCKET_BOTTOM, S.BALL_END.maxAngleDeg, az)
+      expect(overlap(ball, adjuster), `azimuth ${az}`).toBeLessThan(1e-3)
+      ball.delete()
+    }
     // The thinnest wall, from a socket corner to the thread root, is at least two 0.2 mm perimeters.
     expect(S.ADJUSTER.lobe - S.ADJUSTER.offset - S.HEX.across / Math.sqrt(3)).toBeGreaterThanOrEqual(0.4)
     // The key's short arm is not needed: the line is reached with the long arm (checked per key on the reference design).
@@ -386,28 +395,41 @@ describe('the Tarn reference design', () => {
     const placed = toManifold(mf, keepers.placed)
     const seats = measureSeats(mf, ctx, half, material.add(placed))
     for (const k of seats.keys) expect(k.stacks.map(s => [k.id, s.stack, s.fits, s.interferingParts])).toEqual([[k.id, 'tarn island', true, {}]])
-    // Spec 0.4: every adjuster's access line runs from the plate's top plane up the adjuster axis to its hex socket.
-    for (const k of half.keys) {
-      const [p0, p1] = k.backstop!.access!.axis
-      expect(p0[2]).toBeCloseTo(ctx.conf.plateThickness, 6)
-      expect(k.backstop!.access!.diameter).toBe(S.ACCESS.diameter)
-      const axis = socketPose(k)
-      const top = new Vector3(S.ADJUSTER.at[0], S.ADJUSTER.at[1], S.ADJUSTER_BOTTOM).applyMatrix4(axis)
-      expect(new Vector3(...p1).distanceTo(top)).toBeLessThan(1e-5)
-      const dir = new Vector3(...p0).sub(new Vector3(...p1)).normalize()
-      expect(dir.dot(new Vector3(0, 0, -1).transformDirection(axis))).toBeCloseTo(1, 6)
-    }
-    const bay = reservedSolid(mf, half, 'battery')
-    const report = checkKeepers(mf, half, keepers.installed, keepers.sliding, material, body.manifold, { case: body.manifold, 'battery bay': bay })
+    const report = checkKeepers(mf, half, keepers.installed, keepers.sliding, material, body.manifold)
     expect(report.keys.filter(k => !k.ok)).toEqual([])
-    // The access lines: a clear line is free over its whole length; a blocked one is reported with where it first hits.
-    for (const k of report.keys) {
-      if (k.accessClear) expect(k.accessFreeMm, k.id).toBeCloseTo(k.accessLengthMm, 3)
-      else expect(Object.keys(k.accessBlockedBy).length > 0 || !k.accessReachable, k.id).toBe(true)
-    }
-    expect(report.accessClear).toBeGreaterThan(0)
     for (const p of parts.body) p.shape.delete()
   }, 60000)
+
+  test.each(contexts.map(c => [c.side, c] as const))('every adjuster has a clear access line for a ball-end hex key, holes only where needed, %s half', async (side, ctx) => {
+    const half = structuredClone(spec.halves.find(h => h.side == side)!)
+    const parts = await buildCaseParts(ctx, {})
+    const opts = { tolerance: 0.05, angularTolerance: 5 }
+    const keepers = (await tarnKeepers(mf, half, opts))!
+    const plan = planHalfAccess(mf, half, parts, keepers.installed, ctx.conf.plateThickness, opts)
+    applyAccessHoles(parts, plan.holes)
+    // Spec 0.4: each line runs from the plate's top plane up through the ball's centre, at most the rated angle off the adjuster axis.
+    for (const k of half.keys) {
+      const access = k.backstop!.access!
+      const [p0, p1] = access.axis.map(p => new Vector3(...p))
+      expect(p0.z).toBeCloseTo(ctx.conf.plateThickness, 6)
+      expect(access.diameter).toBe(S.ACCESS.diameter)
+      expect(access.angleDeg!).toBeLessThanOrEqual(S.BALL_END.maxAngleDeg + 1e-9)
+      const axis = socketPose(k)
+      const dir = p0.clone().sub(p1).normalize()
+      expect((Math.acos(Math.min(1, dir.dot(new Vector3(0, 0, -1).transformDirection(axis)))) * 180) / Math.PI).toBeCloseTo(access.angleDeg!, 4)
+      const ball = new Vector3(S.ADJUSTER.at[0], S.ADJUSTER.at[1], S.ADJUSTER_BOTTOM + S.BALL_END.centreDepth).applyMatrix4(axis)
+      expect(ball.clone().sub(p1).cross(dir).length()).toBeLessThan(1e-4)
+    }
+    // Holes go only through the walls or the holder.
+    for (const h of plan.holes) for (const name of Object.keys(h.through)) expect(['case walls', 'holder']).toContain(name)
+    // With the holes cut, the export's check finds every line clear and reachable.
+    const body = fuseShapes(mf, parts.body.map(p => p.shape), opts)
+    const holder = fuseShapes(mf, [parts.holder!], opts)
+    const material = mf.Manifold.union([body.manifold, holder.manifold])
+    const report = checkKeepers(mf, half, keepers.installed, keepers.sliding, material, body.manifold, { case: body.manifold, holder: holder.manifold })
+    expect(report.keys.filter(k => !k.accessClear).map(k => [k.id, k.accessBlockedBy, k.accessReachable])).toEqual([])
+    for (const p of parts.body) p.shape.delete()
+  }, 240000)
 })
 
 function ccw(pts: [number, number][]) {

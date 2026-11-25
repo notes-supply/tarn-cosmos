@@ -151,6 +151,7 @@ async function main() {
   const fused: Record<string, any> = {}
   const harnessSeat: Record<string, any> = {}
   const keeperChecks: Record<string, any> = {}
+  const accessPlans: Record<string, any> = {}
   const closeups: Record<string, any> = {}
   const rotationCheck: Record<string, { checked: number; landed: number; worstOffsetMm: number; misses: string[] }> = {}
 
@@ -160,7 +161,8 @@ async function main() {
     await setup()
     timings.openCascadeSetupMs = Math.round(performance.now() - tSetup)
     const solids = await import('$lib/tarn/solids')
-    const { checkKeepers, measureSeats, poseMatrix, reservedSolid, socketPose } = await import('$lib/tarn/seat')
+    const { checkKeepers, measureSeats, poseMatrix, socketPose } = await import('$lib/tarn/seat')
+    const { applyAccessHoles, planHalfAccess } = await import('$lib/tarn/accessPlan')
     const tarnSocket = await import('$lib/tarn/socket')
     const { socketCloseups } = await import('$lib/tarn/closeup')
     const { matchContacts, switchFacts } = await import('$lib/tarn/harness')
@@ -190,6 +192,25 @@ async function main() {
       }
 
       const parts = await solids.buildCaseParts(ctx, t)
+
+      // Tarn socket keepers (socket.ts), placed with the spec poses, and the adjusters' access lines
+      // (accessPlan.ts): planned per key, with holes cut where no direction is clear, before anything is written.
+      const keepers = await timed('keepers', () => solids.tarnKeepers(mf, half, meshOpts))
+      if (keepers) {
+        const plan = await timed('accessPlan', () => planHalfAccess(mf, half, parts, keepers.installed, ctx.conf.plateThickness, meshOpts))
+        applyAccessHoles(parts, plan.holes)
+        const angles = plan.plans.map(p => p.angleDeg).sort((a, b) => a - b)
+        accessPlans[ctx.side] = {
+          angleDeg: { max: angles.at(-1), median: angles[Math.floor(angles.length / 2)] },
+          keys: plan.plans.map(p => ({ id: p.id, angleDeg: p.angleDeg, azimuthDeg: p.azimuthDeg, reachMm: Math.round(p.reachMm * 1000) / 1000, tried: p.tried })),
+          holes: plan.holes,
+          throughBoard: plan.throughBoard,
+          ms: plan.ms,
+        }
+        console.log(`${ctx.side}: access lines planned, ${plan.holes.length} holes (max angle ${angles.at(-1)}°, median ${angles[Math.floor(angles.length / 2)]}°)`)
+        for (const h of plan.holes) console.log(`${ctx.side}:   hole ø${h.diameter} for ${h.id} through ${Object.entries(h.through).map(([n, v]) => `${n} (${v} mm³)`).join(', ')}`)
+      }
+
       const all = [...parts.body, ...(parts.plate ? [{ name: 'Bottom Plate', shape: parts.plate }] : []), ...(parts.holder ? [{ name: 'Microcontroller Holder', shape: parts.holder }] : [])]
       await timed('stepFiles', async () => {
         out('assemblyStep', 'assembly.step', step(await solids.stepFile(all)))
@@ -223,8 +244,6 @@ async function main() {
       }
       const meshes = { body: fuse.body.mesh, plate: fuse.plate?.mesh ?? null, holder: fuse.holder?.mesh ?? null }
 
-      // Tarn socket keepers (socket.ts), placed with the spec poses.
-      const keepers = await timed('keepers', () => solids.tarnKeepers(mf, half, meshOpts))
       const keeperTemplate = keepers?.installed ?? null
       const keeperSliding = keepers?.sliding ?? null
       const keepersPlaced = keepers ? solids.toManifold(mf, keepers.placed) : null
@@ -241,10 +260,9 @@ async function main() {
         if (n < seats.keys.length) warnings.push(`${ctx.side}: the harness stack (${t} mm stiffener) does not fit under ${seats.keys.length - n} switches (harnessSeat in export.json)`)
       }
       if (keeperTemplate) {
-        const bay = reservedSolid(mf, half, 'battery')
-        const access = { case: fuse.body.manifold, plate: fuse.plate?.manifold ?? null, holder: fuse.holder?.manifold ?? null, 'battery bay': bay }
+        // The plate, the battery and the MCU board are out while the adjusters are set (accessPlan.ts).
+        const access = { case: fuse.body.manifold, holder: fuse.holder?.manifold ?? null }
         const report = await timed('keeperChecks', () => checkKeepers(mf, half, keeperTemplate, keeperSliding!, material, fuse.body.manifold, access))
-        bay?.delete()
         keeperChecks[ctx.side] = report
         console.log(`${ctx.side}: keepers fit, clear their neighbours and can go in at ${report.ok} of ${report.keys.length} Tarn sockets`)
         console.log(
@@ -370,6 +388,7 @@ async function main() {
         switchRotationCheck: rotationCheck,
         harnessSeat,
         keeperChecks,
+        accessPlans,
         ...(await tarnSocketReport(switchKeys.some(k => k.socket == 'choc-v2-tarn'))),
         closeups,
         retention,

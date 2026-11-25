@@ -108,12 +108,16 @@ export interface Retainer {
   /** Output (e.g. caseStl) whose solid contains it. */
   part: string
   /**
-   * Spec 0.4 (Tarn ADR 0014), Tarn backstops: the straight line a 2.5 mm hex
-   * key takes to the adjuster, half frame, from the bottom plate's top plane
-   * (axis[0]) up the adjuster axis to its hex socket (axis[1]), and the
-   * diameter kept clear around it.
+   * Spec 0.4 (Tarn ADR 0014), Tarn backstops: the straight line a 2.5 mm
+   * ball-end hex key takes to the adjuster, half frame, from the bottom
+   * plate's top plane (axis[0]) up to where it enters the hex socket's mouth
+   * (axis[1]); the diameter kept clear around it; its angle off the adjuster
+   * axis; and any part besides the bottom plate and the battery that must be
+   * out to use it (`remove`, e.g. the MCU board). The export plans it
+   * (accessPlan.ts); without solids (--spec-only) it is the adjuster's own
+   * axis, angle 0, unchecked.
    */
-  access?: { axis: [[number, number, number], [number, number, number]]; diameter: number }
+  access?: { axis: [[number, number, number], [number, number, number]]; diameter: number; angleDeg?: number; remove?: string[] }
 }
 
 /** A Tarn key's socket frame (socket.ts) in the half frame: its pose turned by socketTurn(switchRotation). */
@@ -135,7 +139,7 @@ export function adjusterAccess(pose: Pose, switchRotation: number, plateTopZ: nu
   const t = (plateTopZ - top.z) / down.z
   const bottom = top.clone().addScaledVector(down, t)
   const r6 = (v: Vector3) => v.toArray().map(x => Math.round(x * 1e6) / 1e6 || 0) as [number, number, number]
-  return { axis: [r6(bottom), r6(top)], diameter: ACCESS.diameter }
+  return { axis: [r6(bottom), r6(top)], diameter: ACCESS.diameter, angleDeg: 0 }
 }
 
 export interface SpecHalf {

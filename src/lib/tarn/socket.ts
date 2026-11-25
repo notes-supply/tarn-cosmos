@@ -229,11 +229,33 @@ export const ADJUSTER = {
  * 58.5 mm [bb-hex] (Brighton-Best's ISO 2936 data sheet; the 2014 edition
  * corrected some across-corner values, unverified for this size). The printed
  * socket is `across` flats (the key's largest plus 0.1 mm print allowance,
- * unverified) and `depth` deep, 1.2 x the key size; ISO 4762's M3 socket asks
- * for at least 1.3 mm of key engagement in steel, and plastic needs more
- * (our choice, unverified).
+ * unverified). It is `depth` deep: a straight key engages it over 2.5 mm
+ * (ISO 4762's M3 socket asks for at least 1.3 mm in steel), and a ball-end
+ * key's ball (BALL_END) sits with its centre BALL_END.centreDepth in, which
+ * keeps its neck clear of the mouth at BALL_END.maxAngleDeg. The mouth has a
+ * `chamfer` (radius at the mouth, depth) for the neck.
  */
-export const HEX = { across: 2.6, depth: 3.0, key: { s: [2.46, 2.5], e: [2.75, 2.82], shortArm: [18.5, 20.5], longArm: [54.5, 58.5] } } as const
+export const HEX = {
+  across: 2.6,
+  depth: 2.5,
+  chamfer: { radius: 1.6, depth: 0.4 },
+  key: { s: [2.46, 2.5], e: [2.75, 2.82], shortArm: [18.5, 20.5], longArm: [54.5, 58.5] },
+} as const
+/**
+ * A 2.5 mm ball-end hex key (Tarn ADR 0014 amended): it drives a hex socket
+ * from up to 25 degrees off its axis (Wiha's ball-end L-keys, "up to 25°
+ * off-center access" [wiha-ball]; Bondhus's Balldriver keys are listed with
+ * the same working angle). The ball is taken as a sphere of the key's largest
+ * across-corners diameter cut by its hex, on a neck 0.7 x s across; neither
+ * dimension has a maker's source (unverified). The ball's centre sits
+ * `centreDepth` inside the socket, its tip touching the socket's floor.
+ */
+export const BALL_END = {
+  maxAngleDeg: 25,
+  ballRadius: HEX.key.e[1] / 2,
+  neckDiameter: 0.7 * HEX.key.s[1],
+  centreDepth: round(HEX.depth - HEX.key.e[1] / 2, 3),
+} as const
 /** The adjuster's access line (Tarn ADR 0014): a straight ø6 mm line along its axis, from the bottom plate's plane to the hex socket. */
 export const ACCESS = { diameter: 6 } as const
 
@@ -697,9 +719,31 @@ export function adjusterManifold(mf: ManifoldToplevel, padTop: number): Manifold
   const padSolid = mf.Manifold.cylinder(pad.height + 0.01, pad.radius, pad.radius, SEGMENTS).translate([at[0], at[1], threadTop - 0.01])
   const body = mf.Manifold.union([core, padSolid])
   const socket = mf.Manifold.extrude([hexOutline()], HEX.depth + 0.5).translate([0, 0, threadBottom - 0.5])
-  const out = body.subtract(socket)
-  for (const m of [core, padSolid, body, socket]) m.delete()
+  // The mouth's chamfer: a cone from HEX.chamfer.radius at the face up to the hex's inscribed radius.
+  const { radius, depth } = HEX.chamfer
+  const cone = mf.Manifold.cylinder(depth, radius, HEX.across / 2, SEGMENTS).translate([at[0], at[1], threadBottom])
+  const below = mf.Manifold.cylinder(0.51, radius, radius, SEGMENTS).translate([at[0], at[1], threadBottom - 0.5])
+  const cut = mf.Manifold.union([socket, cone, below])
+  const out = body.subtract(cut)
+  for (const m of [core, padSolid, body, socket, cone, below, cut]) m.delete()
   return out
+}
+
+/**
+ * A 2.5 mm ball-end hex key in the adjuster's socket (padTop as adjusterManifold), tilted `tiltDeg` off the
+ * adjuster axis toward azimuth `azimuthDeg` about its ball's centre, for the tests. The ball is drawn as the
+ * sphere inscribed in its flats (a maker grinds its facets so it turns at its rated angle in an ISO socket of
+ * up to 2.58 mm across flats; ours is wider), on BALL_END's neck, 20 mm of it.
+ */
+export function ballKeyManifold(mf: ManifoldToplevel, padTop: number, tiltDeg: number, azimuthDeg: number): Manifold {
+  const { neckDiameter, centreDepth } = BALL_END
+  const ball = mf.Manifold.sphere(HEX.key.s[1] / 2, 48)
+  const neck = mf.Manifold.cylinder(20, neckDiameter / 2, neckDiameter / 2, 24).translate([0, 0, -20])
+  const key = mf.Manifold.union([ball, neck])
+  const bottom = padTop - ADJUSTER_LENGTH
+  const placed = key.rotate([0, tiltDeg, 0]).rotate([0, 0, azimuthDeg]).translate([ADJUSTER.at[0], ADJUSTER.at[1], bottom + centreDepth])
+  for (const m of [ball, neck, key]) m.delete()
+  return placed
 }
 
 /** A 2.5 mm hex key (ISO 2936, its largest across flats) in the adjuster's socket, turned `turnDeg` about the axis, for the tests. */

@@ -22,10 +22,11 @@
 import type { Manifold, ManifoldToplevel, Mat4 } from '@rianadon/manifold-3d'
 import { Matrix4 } from 'three/src/math/Matrix4.js'
 import { Vector3 } from 'three/src/math/Vector3.js'
+import { ACCESS_TOUCH_MM3, lineSolid } from './access'
 import { type Box3, plannedStack, rotateXY, roundBox, seatFootprint, STACK, switchFacts } from './harness'
 import {
   ADJUSTER,
-  ADJUSTER_BOTTOM,
+  BALL_END,
   boxToSwitchFrame,
   circleOutline,
   FOOTPRINT_RECT,
@@ -301,10 +302,10 @@ export const KEEPER_ACCESS = { marginMm: 0.2 } as const
 /**
  * The hex key's way to the adjuster (Tarn ADR 0014): the spec's
  * backstop.access line, ø6 mm, from the bottom plate's top plane to the hex
- * socket. The key goes in by its long arm, so the line plus the socket's depth
- * must be shorter than ISO 2936's shortest long arm, HEX.key.longArm[0].
+ * socket's mouth. The key goes in by its long arm, so the line plus the way to
+ * the ball's tip must be shorter than ISO 2936's shortest long arm,
+ * HEX.key.longArm[0].
  */
-export const ACCESS_TOUCH_MM3 = 0.02
 /** Touching faces (tongue on window floor, keeper under P3b) leave slivers this small after meshing. */
 export const KEEPER_TOUCH_MM3 = 0.02
 
@@ -348,9 +349,9 @@ export interface KeeperReport {
  * keeper with its adjuster as installed, in the socket frame; `sliding` the
  * keeper as it slides in (snap arm pressed down, adjuster screwed back);
  * `material` is case, plate and holder; `body` the case alone; `access` the
- * obstacles for the access lines by name (default: `material`). The plate
- * and the battery bay are off while the adjusters are set, but they are
- * reported too.
+ * obstacles for the access lines by name (default: `material`): the case and
+ * the holder, since the plate, the battery and the MCU board are out while
+ * the adjusters are set.
  */
 export function checkKeepers(
   mf: ManifoldToplevel,
@@ -387,18 +388,13 @@ export function checkKeepers(
     swept.delete()
     const wayInOverlapMm3 = r3(overlapVolume(sweep, body))
     sweep.delete()
-    // The access line: a ø6 cylinder down the adjuster axis from the hex socket, cut at the plate's top plane.
+    // The access line (spec backstop.access, planned by accessPlan.ts): a ø6 cylinder from the socket's mouth to the plate's top plane.
     const line = k.backstop!.access!
     const [p0, p1] = line.axis.map(p => new Vector3(...p))
     const length = p0.distanceTo(p1)
-    const r = line.diameter / 2
-    const lineSolid = (len: number) => {
-      const c = mf.Manifold.cylinder(len, r, r, 48).translate([ADJUSTER.at[0], ADJUSTER.at[1], ADJUSTER_BOTTOM - len])
-      const placedLine = c.transform(socketPose(k).elements as unknown as Mat4)
-      const out = placedLine.trimByPlane([0, 0, 1], p0.z + 0.01)
-      c.delete()
-      placedLine.delete()
-      return out
+    const lineSolidTo = (len: number) => {
+      const end = p1.clone().add(p0.clone().sub(p1).setLength(len))
+      return lineSolid(mf, line.axis[1], end.toArray() as [number, number, number], line.diameter, p0.z)
     }
     const obstacles: [string, Manifold][] = [
       ...(Object.entries(access).filter(([, m]) => m) as [string, Manifold][]),
@@ -409,24 +405,26 @@ export function checkKeepers(
         const v = overlapVolume(solid, m)
         return v > ACCESS_TOUCH_MM3 ? [[name, r3(v)]] : []
       })
-    const whole = lineSolid(length + r)
+    const whole = lineSolidTo(length)
     const accessBlockedBy = Object.fromEntries(blocked(whole))
     whole.delete()
     // Where the line first meets an obstacle, to 0.1 mm.
     let free = length
     if (Object.keys(accessBlockedBy).length) {
-      let lo = 0, hi = length + r
+      let lo = 0, hi = length
       while (hi - lo > 0.1) {
         const mid = (lo + hi) / 2
-        const part = lineSolid(mid)
+        const part = lineSolidTo(mid)
         if (blocked(part).length) hi = mid
         else lo = mid
         part.delete()
       }
       free = lo
     }
+    const angle = ((line.angleDeg ?? 0) * Math.PI) / 180
+    const reach = length + BALL_END.centreDepth / Math.cos(angle) + BALL_END.ballRadius
     const accessLengthMm = r3(length)
-    const accessReachable = length + HEX.depth <= HEX.key.longArm[0]
+    const accessReachable = reach <= HEX.key.longArm[0]
     const accessClear = Object.keys(accessBlockedBy).length == 0 && accessReachable
     const ok = [installedOverlapMm3, insertionOverlapMm3, wayInOverlapMm3].every(v => v <= KEEPER_TOUCH_MM3) && Object.keys(keeperOverlaps).length == 0
     return { id: k.id, installedOverlapMm3, keeperOverlaps, insertionOverlapMm3, wayInOverlapMm3, ok, accessBlockedBy, accessLengthMm, accessReachable, accessFreeMm: r3(free), accessClear }
