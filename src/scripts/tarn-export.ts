@@ -7,7 +7,7 @@
  * <design> is a Cosmos URL (https://ryanis.cool/cosmos/beta#cm:...), its hash
  * part (cm:..., with or without '#'), or a file containing either.
  *
- * Writes <outdir>/spec.json (tarnSpec 0.3) and, per half, <outdir>/<side>/:
+ * Writes <outdir>/spec.json (tarnSpec 0.4) and, per half, <outdir>/<side>/:
  *   case.step                walls + web + switch holders + screw attachments, as separate named solids
  *   case.stl                 the same parts fused into one manifold solid
  *   plate.step, plate.stl    bottom plate
@@ -160,7 +160,7 @@ async function main() {
     await setup()
     timings.openCascadeSetupMs = Math.round(performance.now() - tSetup)
     const solids = await import('$lib/tarn/solids')
-    const { checkKeepers, measureSeats, poseMatrix, socketPose } = await import('$lib/tarn/seat')
+    const { checkKeepers, measureSeats, poseMatrix, reservedSolid, socketPose } = await import('$lib/tarn/seat')
     const tarnSocket = await import('$lib/tarn/socket')
     const { socketCloseups } = await import('$lib/tarn/closeup')
     const { matchContacts, switchFacts } = await import('$lib/tarn/harness')
@@ -241,9 +241,25 @@ async function main() {
         if (n < seats.keys.length) warnings.push(`${ctx.side}: the harness stack (${t} mm stiffener) does not fit under ${seats.keys.length - n} switches (harnessSeat in export.json)`)
       }
       if (keeperTemplate) {
-        const report = await timed('keeperChecks', () => checkKeepers(mf, half, keeperTemplate, keeperSliding!, material, fuse.body.manifold))
+        const bay = reservedSolid(mf, half, 'battery')
+        const access = { case: fuse.body.manifold, plate: fuse.plate?.manifold ?? null, holder: fuse.holder?.manifold ?? null, 'battery bay': bay }
+        const report = await timed('keeperChecks', () => checkKeepers(mf, half, keeperTemplate, keeperSliding!, material, fuse.body.manifold, access))
+        bay?.delete()
         keeperChecks[ctx.side] = report
         console.log(`${ctx.side}: keepers fit, clear their neighbours and can go in at ${report.ok} of ${report.keys.length} Tarn sockets`)
+        console.log(
+          `${ctx.side}: the adjuster's hex-key access line is clear at ${report.accessClear} of ${report.keys.length} Tarn sockets (longest line ${
+            Math.max(...report.keys.map(k => k.accessLengthMm)).toFixed(1)
+          } mm)`,
+        )
+        const blockedLines = report.keys.filter(k => !k.accessClear)
+        if (blockedLines.length) {
+          const what = (k: (typeof blockedLines)[number]) =>
+            `${k.id} (${Object.entries(k.accessBlockedBy).map(([n, v]) => `${n} ${v} mm³`).join(', ')}${
+              k.accessReachable ? '' : `, ${k.accessLengthMm} mm long`
+            }; first obstacle ${k.accessFreeMm} mm from the socket)`
+          warnings.push(`${ctx.side}: ${blockedLines.length} adjuster access lines are blocked or too long: ${blockedLines.map(what).join('; ')} (keeperChecks in export.json)`)
+        }
         if (report.ok < report.keys.length) {
           warnings.push(`${ctx.side}: ${report.keys.length - report.ok} keepers collide or cannot go in: ${report.keys.filter(k => !k.ok).map(k => k.id).join(', ')} (keeperChecks in export.json)`)
         }

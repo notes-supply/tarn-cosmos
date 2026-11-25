@@ -245,7 +245,7 @@ export const PART_INFO: Record<CuttleKey['type'], PartInfo> = {
     bomIcon: 'switch',
   },
   // Tarn: holds one island of the Tarn flex harness (steel 0.3 stiffener, 0.12 flex, Kailh hotswap socket)
-  // under a printed 1.2 mm spacer, with a printed keeper and adjuster screw under the hotswap socket. Geometry and facts: src/lib/tarn/socket.ts, whose
+  // under a printed 1.2 mm spacer, with a printed keeper and hex-key adjuster screw under the hotswap socket. Geometry and facts: src/lib/tarn/socket.ts, whose
   // numbers these must match (src/lib/tarn/socket.test.ts checks it). The island is off-centre, so the
   // footprint is offset; 'Island East' turns everything 180 degrees.
   'choc-v2-tarn': {
@@ -258,7 +258,7 @@ export const PART_INFO: Record<CuttleKey['type'], PartInfo> = {
     socketSize: () => [19.6, 19.9, 2.0] as PartSize,
     socketOffset: (v: Variant) => (v.island == 'Island East' ? [0.6, 0.55] : [-0.6, -0.55]) as [number, number],
     // Both offsets at once (the floor only needs the corners), so it also holds for mirrored keys.
-    partBottom: () => [box(20.8, 21, 12.2)],
+    partBottom: () => [box(20.8, 21, 10.68)],
     keycap: 'mx',
     extraBomItems: () => ({
       'tarn-keeper': { item: 'Tarn keeper (printed, keeper.stl)', icon: 'pcb', count: 1 },
@@ -273,7 +273,7 @@ export const PART_INFO: Record<CuttleKey['type'], PartInfo> = {
     flipPart: (v: Variant) => v.island == 'Island East',
     accessFromBelow: true,
     description:
-      'Holds one island of the Tarn flex harness under a 1.2 mm plate and a printed spacer that stands in for a PCB. A printed keeper slides and clicks in under the island, and a printed thumbscrew in the keeper, turned up by hand before the switch goes in, holds the island against the spacer and takes the switch insertion force. The pocket is open on all four sides for the harness links. Island West/East picks the side of the key the island sits on; a mirrored half gets the other one.',
+      'Holds one island of the Tarn flex harness under a 1.2 mm plate and a printed spacer that stands in for a PCB. A printed keeper slides and clicks in under the island, and a printed set screw in the keeper, turned up with a 2.5 mm hex key before the switch goes in, holds the island against the spacer and takes the switch insertion force. The pocket is open on all four sides for the harness links. Island West/East picks the side of the key the island sits on; a mirrored half gets the other one.',
     icon: 'choc',
     bomIcon: 'switch',
   },

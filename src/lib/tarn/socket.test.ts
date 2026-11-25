@@ -8,11 +8,12 @@ import '../../model_gen/node-model' // points Cosmos's loaders at the files on d
 import { PART_INFO, partBottom, socketOffset, socketSize } from '$lib/geometry/socketsParts'
 import type { Manifold, ManifoldToplevel } from '@rianadon/manifold-3d'
 import { beforeAll, describe, expect, test } from 'bun:test'
+import { Vector3 } from 'three/src/math/Vector3.js'
 import { setup } from '../../model_gen/node-model'
 import { referenceDesign } from '../../scripts/tarn-reference-design'
 import { cosmosChecks } from './checks'
 import { CONTACT_SEARCH_MM, CONTACT_TOLERANCE_MM, SWITCHES } from './harness'
-import { checkKeepers, measureSeats } from './seat'
+import { checkKeepers, measureSeats, reservedSolid, socketPose } from './seat'
 import * as S from './socket'
 import { buildCaseParts, fuseShapes, inFrame, manifoldKernel, shapeMesh, switchMesh, tarnKeepers, toManifold } from './solids'
 import { buildSpec, islandMatrix, isSpecKey, keyIds, rowMajor } from './spec'
@@ -144,11 +145,30 @@ describe('the socket holds the island with the ADR 0011 stack', () => {
     const adjuster = S.adjusterManifold(mf, S.SOCKET_BOTTOM)
     const turned = adjuster.translate([-ax, -ay, 0]).rotate([0, 0, 180]).translate([ax, ay, 0])
     expect(overlap(turned, keeper)).toBeGreaterThan(1)
-    // Its knob stays below the keeper at the highest setting and above the Cosmos floor at the lowest.
+    // Its bottom (the hex socket's mouth) stays below the keeper at the highest setting and above the Cosmos floor at the lowest.
     expect(S.PAD_RANGE[1] - S.ADJUSTER_LENGTH).toBeLessThanOrEqual(S.KEEPER_BOTTOM - 0.1)
     const lowest = S.adjusterManifold(mf, S.PAD_RANGE[0])
     expect(lowest.boundingBox().min[2]).toBeGreaterThan(-S.PART_BOTTOM_DEPTH)
     for (const m of [socket, keeper, pad, under, adjuster, turned, lowest, ...island.map(i => i.m)]) m.delete()
+  })
+
+  test("a 2.5 mm hex key (ISO 2936) fits the adjuster's socket and drives it; the socket is deep enough and its wall holds", () => {
+    const adjuster = S.adjusterManifold(mf, S.SOCKET_BOTTOM)
+    // The largest key, fully in, clears the socket...
+    const key = S.hexKeyManifold(mf, S.SOCKET_BOTTOM)
+    expect(overlap(key, adjuster)).toBeLessThan(1e-6)
+    // ...and turned by a twelfth of a turn it runs into the socket's flats, so it drives the adjuster.
+    const turned = S.hexKeyManifold(mf, S.SOCKET_BOTTOM, 30)
+    expect(overlap(turned, adjuster)).toBeGreaterThan(0.5)
+    // Across corners the largest key (ISO 2936 e max 2.82) is inside the socket's corners.
+    expect(S.HEX.across / Math.cos(Math.PI / 6)).toBeGreaterThan(S.HEX.key.e[1])
+    // At least 1.2 x the key size deep, and shorter than the adjuster, so the pad end stays solid.
+    expect(S.HEX.depth).toBeGreaterThanOrEqual(1.2 * 2.5)
+    expect(S.HEX.depth).toBeLessThan(S.ADJUSTER_LENGTH - S.ADJUSTER.pad.height)
+    // The thinnest wall, from a socket corner to the thread root, is at least two 0.2 mm perimeters.
+    expect(S.ADJUSTER.lobe - S.ADJUSTER.offset - S.HEX.across / Math.sqrt(3)).toBeGreaterThanOrEqual(0.4)
+    // The key's short arm is not needed: the line is reached with the long arm (checked per key on the reference design).
+    for (const m of [adjuster, key, turned]) m.delete()
   })
 
   test('the adjuster stays set: insertion cannot turn it, a pull does not load it; a printed spring could not do its job', () => {
@@ -366,8 +386,26 @@ describe('the Tarn reference design', () => {
     const placed = toManifold(mf, keepers.placed)
     const seats = measureSeats(mf, ctx, half, material.add(placed))
     for (const k of seats.keys) expect(k.stacks.map(s => [k.id, s.stack, s.fits, s.interferingParts])).toEqual([[k.id, 'tarn island', true, {}]])
-    const report = checkKeepers(mf, half, keepers.installed, keepers.sliding, material, body.manifold)
+    // Spec 0.4: every adjuster's access line runs from the plate's top plane up the adjuster axis to its hex socket.
+    for (const k of half.keys) {
+      const [p0, p1] = k.backstop!.access!.axis
+      expect(p0[2]).toBeCloseTo(ctx.conf.plateThickness, 6)
+      expect(k.backstop!.access!.diameter).toBe(S.ACCESS.diameter)
+      const axis = socketPose(k)
+      const top = new Vector3(S.ADJUSTER.at[0], S.ADJUSTER.at[1], S.ADJUSTER_BOTTOM).applyMatrix4(axis)
+      expect(new Vector3(...p1).distanceTo(top)).toBeLessThan(1e-5)
+      const dir = new Vector3(...p0).sub(new Vector3(...p1)).normalize()
+      expect(dir.dot(new Vector3(0, 0, -1).transformDirection(axis))).toBeCloseTo(1, 6)
+    }
+    const bay = reservedSolid(mf, half, 'battery')
+    const report = checkKeepers(mf, half, keepers.installed, keepers.sliding, material, body.manifold, { case: body.manifold, 'battery bay': bay })
     expect(report.keys.filter(k => !k.ok)).toEqual([])
+    // The access lines: a clear line is free over its whole length; a blocked one is reported with where it first hits.
+    for (const k of report.keys) {
+      if (k.accessClear) expect(k.accessFreeMm, k.id).toBeCloseTo(k.accessLengthMm, 3)
+      else expect(Object.keys(k.accessBlockedBy).length > 0 || !k.accessReachable, k.id).toBe(true)
+    }
+    expect(report.accessClear).toBeGreaterThan(0)
     for (const p of parts.body) p.shape.delete()
   }, 60000)
 })

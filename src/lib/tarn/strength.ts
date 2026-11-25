@@ -16,7 +16,7 @@
  *   post at the window, in tension with the bending from the reaction's offset
  *   in the post. The keeper plate is checked as a beam between the -Y tongues
  *   and the P3a tongue, at its section through the adjuster's thread.
- * - Print directions: the keeper prints flat and the adjuster knob down, so the
+ * - Print directions: the keeper prints flat and the adjuster on its end, so the
  *   keeper's stresses are in the layer plane and the adjuster's are across its
  *   layers. The case prints upright (open side down), so a post hanging from
  *   the plate is pulled across its layers; the window floor bends along them.
@@ -41,7 +41,7 @@
  * so neither insertion nor removal can turn it.
  */
 
-import { ADJUSTER, ISLAND, KEEPER_BOTTOM, KEEPER_PARTS, KEEPER_THICKNESS, KEEPER_TONGUES, KEEPER_TOP, LOADS, PAD_RANGE, POST_FOOT, POSTS, SPACER_BOTTOM, TONGUE, WINDOW } from './socket'
+import { ADJUSTER, HEX, ISLAND, KEEPER_BOTTOM, KEEPER_PARTS, KEEPER_THICKNESS, KEEPER_TONGUES, KEEPER_TOP, LOADS, PAD_RANGE, POST_FOOT, POSTS, SPACER_BOTTOM, TONGUE, WINDOW } from './socket'
 
 export const STRENGTH_MPA = { inLayer: 40, acrossLayers: 15, shear: 10 } as const
 export const MIN_SAFETY = 2
@@ -106,9 +106,10 @@ export interface StrengthReport {
   adjuster: {
     /** Torque per newton of axial force on the pad, N·mm/N: lead + thread friction + pad friction. */
     torquePerNewtonMm: number
-    /** Torque to push the socket onto the pins at the full mating force, and that torque as a force at the knob's rim. */
+    /** Torque at which the adjuster would load the backstop to its 30 N design force. */
     setTorqueNmm: number
-    setRimForceN: number
+    /** The hex socket's thinnest wall, to the thread root (mm). */
+    hexWallMm: number
     /** The thread self-locks when the friction exceeds the lead: tan(lead angle) < FRICTION / cos(flank). */
     leadTan: number
     selfLocking: boolean
@@ -191,17 +192,22 @@ export function backstopStrength(load = LOADS.insertionN): StrengthReport {
   // The adjuster. The pad bears on the socket body; the core between the pad and the keeper is
   // in compression; the thread can strip on a cylinder at its mean radius over half its length
   // (the lobe fills half of each turn), in the keeper or in the adjuster.
+  // The hex socket (ADR 0014) runs up the bottom of the adjuster, through most of the engaged
+  // thread, so the core is taken as a tube everywhere: its area less the socket's.
   const { lobe, offset, pad, pitch, clearance } = ADJUSTER
   const core = lobe - offset
   const mean = lobe
+  const hexArea = (Math.sqrt(3) / 2) * HEX.across ** 2
+  const hexCorner = HEX.across / Math.sqrt(3)
+  const coreArea = Math.PI * core ** 2 - hexArea
   const threadTopLowest = PAD_RANGE[0] - pad.height
   const engaged = Math.min(KEEPER_THICKNESS, threadTopLowest - KEEPER_BOTTOM)
   line('adjuster pad on the socket body (compression)', F / (Math.PI * pad.radius ** 2), 'across layers')
-  line('adjuster core (compression)', F / (Math.PI * core ** 2), 'across layers')
+  line('adjuster core around the hex socket (compression)', F / coreArea, 'across layers')
   line('adjuster thread stripping', F / (2 * Math.PI * mean * engaged * 0.5), 'shear')
   // Core compression from the pad to the middle of the engaged thread, at the highest setting (the longest).
   const coreLength = PAD_RANGE[1] - (KEEPER_TOP + KEEPER_BOTTOM) / 2
-  deflection.adjusterCore = (F * coreLength) / (E * Math.PI * core ** 2)
+  deflection.adjusterCore = (F * coreLength) / (E * coreArea)
 
   sup.forEach((s, i) => {
     const R = Math.abs(reactions[i].reactionN)
@@ -252,6 +258,13 @@ export function backstopStrength(load = LOADS.insertionN): StrengthReport {
   const flank = Math.cos((FLANK_DEG * Math.PI) / 180)
   const torquePerNewton = pitch / (2 * Math.PI) + (FRICTION * mean) / flank + FRICTION * ((2 / 3) * pad.radius)
   const leadTan = pitch / (2 * Math.PI * mean)
+  // The hex socket's wall, at its thinnest (between a hex corner and the thread root), as a thin tube in
+  // torsion under the torque that would load the backstop to the full design force: more than a set
+  // that stops when the island meets the spacer ever needs.
+  const setTorque = torquePerNewton * LOADS.insertionN
+  const wall = core - hexCorner
+  const wallMean = (core + hexCorner) / 2
+  line('adjuster wall round the hex socket (torsion at the design-load torque)', setTorque / (2 * Math.PI * wallMean ** 2 * wall), 'shear')
   return {
     loadN: load,
     reactions: reactions.map(r => ({ ...r, reactionN: r2(r.reactionN) })),
@@ -260,8 +273,8 @@ export function backstopStrength(load = LOADS.insertionN): StrengthReport {
     deflectionMm: { ...Object.fromEntries(Object.entries(deflection).map(([k, v]) => [k, Math.round(v * 1e4) / 1e4])), total: r3(total) },
     adjuster: {
       torquePerNewtonMm: r3(torquePerNewton),
-      setTorqueNmm: r2(torquePerNewton * LOADS.insertionN),
-      setRimForceN: r2((torquePerNewton * LOADS.insertionN) / ADJUSTER.knob.radius),
+      setTorqueNmm: r2(setTorque),
+      hexWallMm: r3(wall),
       leadTan: r3(leadTan),
       selfLocking: leadTan < FRICTION / flank,
       engagedMm: r3(engaged),

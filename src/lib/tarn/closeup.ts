@@ -148,7 +148,7 @@ export function socketCloseups(mf: ManifoldToplevel, input: CloseupInput, size =
       name: 'section-x',
       description: `Section through the adjuster's axis (x = ${
         ADJUSTER.at[0]
-      } mm, socket frame), seen from -X (-Y, the hotswap socket side, is on the right): keycap, switch, plate, the printed spacer (teal) under the switch housing with the centre post's hole, the steel stiffener held against the spacer's underside, flex, the hotswap socket on the adjuster's pad, the adjuster's thread in the keeper and its knob below, W and P4 at the far right.`,
+      } mm, socket frame), seen from -X (-Y, the hotswap socket side, is on the right): keycap, switch, plate, the printed spacer (teal) under the switch housing with the centre post's hole, the steel stiffener held against the spacer's underside, flex, the hotswap socket on the adjuster's pad, the adjuster's thread in the keeper and the 2.5 mm hex socket in its bottom face, W and P4 at the far right.`,
       items: items({ axis: 0, at: ADJUSTER.at[0] }),
       look: [1, 0, 0],
       up: [0, 0, 1],
@@ -164,7 +164,7 @@ export function socketCloseups(mf: ManifoldToplevel, input: CloseupInput, size =
     },
     {
       name: 'below',
-      description: "From below, keeper in place: its four tongues in the windows of W, P4 and P3a, the snap arm under P3b, and the adjuster's knurled knob under the hotswap socket.",
+      description: "From below, keeper in place: its four tongues in the windows of W, P4 and P3a, the snap arm under P3b, and the adjuster's hex socket under the hotswap socket.",
       items: items(null, ['keycap'], false),
       look: [0.35, 0.45, 1],
       up: [0, 1, 0],

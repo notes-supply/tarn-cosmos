@@ -42,7 +42,7 @@ function move(cl: CosmosCluster, [dx, dy, dz]: [number, number, number]) {
 }
 
 /** Keywell height off the floor (Cosmos verticalClearance). */
-const VERTICAL_CLEARANCE = 3
+const VERTICAL_CLEARANCE = 4.5
 /**
  * The USB opening: OVERMOLD.max plus OVERMOLD.margin a side, centred on the
  * receptacle face (x 6, z 3.23 in the board frame; Cosmos's connector y is
@@ -116,7 +116,7 @@ export const CHANGES: Change[] = [
     from: '0.1 mm',
     to: `${VERTICAL_CLEARANCE} mm`,
     why:
-      "Lifts the keywell off the floor: 0.9 mm so the keeper of thumbs-c2-r0 can come in over the screw boss under it, and 2 mm more so the sockets and keepers over the right half's MCU antenna stay 10 mm from it (u-blox NINA-B3 SIM R15 §3.3.3; src/lib/tarn/mcu.ts).",
+      "Lifts the keywell off the floor: 0.9 mm so the keeper of thumbs-c2-r0 can come in over the screw boss under it, 2 mm more so the sockets and keepers over the right half's MCU antenna stay 10 mm from it (u-blox NINA-B3 SIM R15 §3.3.3; src/lib/tarn/mcu.ts), and 1.5 mm more that the Tarn socket's floor envelope gave up when the adjuster lost its finger knob (ADR 0014), so the keywell stays where it was and the space under the keepers goes to the harness.",
     apply: c => {
       c.verticalClearance = VERTICAL_CLEARANCE
     },

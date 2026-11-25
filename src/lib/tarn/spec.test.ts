@@ -107,7 +107,7 @@ describe.each(Object.entries(DESIGNS))('%s', (_, url) => {
   })
 
   test('harness fields (0.2 and 0.3): rotation and seat for switches, none for other parts, no retention or island on these sockets', () => {
-    expect(spec.tarnSpec).toBe('0.3')
+    expect(spec.tarnSpec).toBe('0.4')
     for (const key of spec.halves.flatMap(h => h.keys)) {
       if (key.switch == 'other') {
         expect(key.switchRotation, key.id).toBeNull()

@@ -1,5 +1,5 @@
 /**
- * Tarn spec export: turns a Cosmos design into a Tarn spec (tarnSpec 0.3).
+ * Tarn spec export: turns a Cosmos design into a Tarn spec (tarnSpec 0.4).
  *
  * This module is pure geometry. It never loads OpenCascade, so the spec can be
  * produced quickly even where the CAD kernel is unavailable. The frame
@@ -39,12 +39,13 @@ import { convertToMaybeCustomConnectors, type Cuttleform, type CuttleKey, type F
 import { type CosmosCluster, type CosmosKeyboard, fromCosmosConfig, getRowColumn, mirrorCluster } from '$lib/worker/config.cosmos'
 import Trsf from '$lib/worker/modeling/transformation'
 import { Matrix4 } from 'three/src/math/Matrix4.js'
+import { Vector3 } from 'three/src/math/Vector3.js'
 import { deserialize } from '../../routes/beta/lib/serialize'
 import { type Box3, partFlipped, type SpecSeat, specSeat, switchRotation } from './harness'
 import { ANTENNA, BATTERY_BAY, batterySpace, CELLS, leadPath, RF_CLEARANCE } from './mcu'
-import { type IslandSpec, islandSpecFields, retainers, SOCKET_ID, STIFFENER_TOP } from './socket'
+import { ACCESS, ADJUSTER, ADJUSTER_BOTTOM, type IslandSpec, islandSpecFields, retainers, SOCKET_ID, socketTurn, STIFFENER_TOP } from './socket'
 
-export const TARN_SPEC_VERSION = '0.3'
+export const TARN_SPEC_VERSION = '0.4'
 export { partFlipped }
 export type Side = 'left' | 'right'
 export const SIDES: Side[] = ['left', 'right']
@@ -85,6 +86,12 @@ export function islandMatrix(pose: Pose, switchRotation: number): Matrix4 {
     .multiply(new Matrix4().makeTranslation(0, 0, STIFFENER_TOP))
 }
 
+/** The Tarn socket's spec fields: backstop (with its access line), clamp and island. The bottom plate's top is at z = plateThickness in the half frame. */
+function tarnFields(pose: Pose, rotation: number, plateThickness: number) {
+  const { backstop, clamp } = retainers(rotation)
+  return { backstop: { ...backstop, access: adjusterAccess(pose, rotation, plateThickness) }, clamp, island: specIsland(pose, rotation) }
+}
+
 function specIsland(pose: Pose, switchRotation: number): SpecIsland {
   return { pose: rowMajor(islandMatrix(pose, switchRotation)), ...islandSpecFields(switchRotation) }
 }
@@ -100,6 +107,35 @@ export interface Retainer {
   designLoadN: number
   /** Output (e.g. caseStl) whose solid contains it. */
   part: string
+  /**
+   * Spec 0.4 (Tarn ADR 0014), Tarn backstops: the straight line a 2.5 mm hex
+   * key takes to the adjuster, half frame, from the bottom plate's top plane
+   * (axis[0]) up the adjuster axis to its hex socket (axis[1]), and the
+   * diameter kept clear around it.
+   */
+  access?: { axis: [[number, number, number], [number, number, number]]; diameter: number }
+}
+
+/** A Tarn key's socket frame (socket.ts) in the half frame: its pose turned by socketTurn(switchRotation). */
+export function socketMatrix(pose: Pose, switchRotation: number): Matrix4 {
+  return new Matrix4()
+    .set(...(pose as [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number]))
+    .multiply(new Matrix4().makeRotationZ((socketTurn(switchRotation) * Math.PI) / 180))
+}
+
+/**
+ * The adjuster's access line of a Tarn key, half frame: from where the
+ * adjuster axis meets the bottom plate's top plane (z = plateTopZ) up to the
+ * hex socket's mouth at the nominal setting.
+ */
+export function adjusterAccess(pose: Pose, switchRotation: number, plateTopZ: number): NonNullable<Retainer['access']> {
+  const m = socketMatrix(pose, switchRotation)
+  const top = new Vector3(ADJUSTER.at[0], ADJUSTER.at[1], ADJUSTER_BOTTOM).applyMatrix4(m)
+  const down = new Vector3(0, 0, -1).transformDirection(m)
+  const t = (plateTopZ - top.z) / down.z
+  const bottom = top.clone().addScaledVector(down, t)
+  const r6 = (v: Vector3) => v.toArray().map(x => Math.round(x * 1e6) / 1e6 || 0) as [number, number, number]
+  return { axis: [r6(bottom), r6(top)], diameter: ACCESS.diameter }
 }
 
 export interface SpecHalf {
@@ -331,7 +367,7 @@ export function specHalf(cosmos: CosmosKeyboard, ctx: HalfContext): SpecHalf {
       pose,
       switchRotation: switchRotation(key, family),
       seat: specSeat(key, family),
-      ...(key.type == SOCKET_ID ? { ...retainers(switchRotation(key, family)!), island: specIsland(pose, switchRotation(key, family)!) } : {}),
+      ...(key.type == SOCKET_ID ? tarnFields(pose, switchRotation(key, family)!, conf.plateThickness) : {}),
     })
   })
 

@@ -12,8 +12,8 @@
  *   of socket.ts: stiffener and flex over the island outline, the hotswap
  *   socket's real outline and the diode, plus the switch pins;
  * - for Tarn sockets, the keepers and their adjusters: each against the case,
- *   its neighbours, the room the keeper needs to go in and the room to turn
- *   the adjuster's knob (checkKeepers).
+ *   its neighbours, the room the keeper needs to go in and the adjuster's
+ *   access line for a hex key (checkKeepers).
  *
  * Obstacles and poses are both in the half frame, so a key's switch-frame boxes
  * are placed with its spec pose.
@@ -25,23 +25,22 @@ import { Vector3 } from 'three/src/math/Vector3.js'
 import { type Box3, plannedStack, rotateXY, roundBox, seatFootprint, STACK, switchFacts } from './harness'
 import {
   ADJUSTER,
-  ADJUSTER_LENGTH,
+  ADJUSTER_BOTTOM,
   boxToSwitchFrame,
   circleOutline,
   FOOTPRINT_RECT,
+  HEX,
   ISLAND,
   islandEnvelope,
   KEEPER_BOTTOM,
   KEEPER_THICKNESS,
-  PAD_RANGE,
   POST_BOTTOM,
   type Prism,
   SOCKET_ID,
-  socketTurn,
   STACK as TARN_STACK,
   TONGUE,
 } from './socket'
-import { type HalfContext, isSpecKey, type Pose, type SpecHalf } from './spec'
+import { type HalfContext, isSpecKey, type Pose, socketMatrix, type SpecHalf } from './spec'
 
 /**
  * The clear box and the stack are tested this far below the stiffener plane, so
@@ -61,7 +60,7 @@ export function poseMatrix(p: Pose): Matrix4 {
 
 /** A Tarn key's socket frame (socket.ts) in the half frame: its pose turned by socketTurn(switchRotation). */
 export function socketPose(key: { pose: Pose; switchRotation: number | null }): Matrix4 {
-  return poseMatrix(key.pose).multiply(new Matrix4().makeRotationZ((socketTurn(key.switchRotation ?? 180) * Math.PI) / 180))
+  return socketMatrix(key.pose, key.switchRotation ?? 180)
 }
 
 /** A switch-frame box placed in the half frame. */
@@ -300,12 +299,12 @@ export function measureSeats(mf: ManifoldToplevel, ctx: HalfContext, half: SpecH
  */
 export const KEEPER_ACCESS = { marginMm: 0.2 } as const
 /**
- * Room to turn the adjuster's knob with fingertips from below (bottom plate
- * off): a cylinder `margin` wider than the knob, from the knob at its lowest
- * setting `depth` down, more than twice the knob's height. Our assumption
- * (unverified) for a fingertip rolling or pinching the knurled rim.
+ * The hex key's way to the adjuster (Tarn ADR 0014): the spec's
+ * backstop.access line, ø6 mm, from the bottom plate's top plane to the hex
+ * socket. The key goes in by its long arm, so the line plus the socket's depth
+ * must be shorter than ISO 2936's shortest long arm, HEX.key.longArm[0].
  */
-export const KNOB_ACCESS = { marginMm: 1.0, depthMm: 4 } as const
+export const ACCESS_TOUCH_MM3 = 0.02
 /** Touching faces (tongue on window floor, keeper under P3b) leave slivers this small after meshing. */
 export const KEEPER_TOUCH_MM3 = 0.02
 
@@ -319,27 +318,49 @@ export interface KeeperResult {
   insertionOverlapMm3: number
   /** Case body material in the way in (KEEPER_ACCESS). */
   wayInOverlapMm3: number
-  /** Case body material where a fingertip turns the adjuster's knob (KNOB_ACCESS). */
-  knobAccessOverlapMm3: number
+  /** Keeper fits, clears its neighbours and goes in. */
   ok: boolean
+  /** What the adjuster's access line runs into (ø6 mm, ADR 0014), by name (case, plate, holder, battery bay, other keepers by id); volumes in mm^3. */
+  accessBlockedBy: Record<string, number>
+  /** The access line's length, and whether a 2.5 mm hex key's long arm reaches through it into the socket. */
+  accessLengthMm: number
+  accessReachable: boolean
+  /** Free length of the line from the hex socket down to its first obstacle (the whole line when clear). */
+  accessFreeMm: number
+  /** The line is clear and reachable. */
+  accessClear: boolean
 }
 
 export interface KeeperReport {
   side: string
   keys: KeeperResult[]
   ok: number
+  /** Keys whose access line is clear and reachable. */
+  accessClear: number
   ms: number
 }
 
 /**
  * Check every Tarn keeper of a half: that it fits where it is installed, that
  * it does not collide with its neighbours, that it can go in from below with
- * the bottom plate off, and that a fingertip can reach its adjuster's knob. `keeper` is the keeper with its adjuster as
- * installed, in the socket frame; `sliding` the keeper as it slides in (snap
- * arm pressed down, adjuster screwed back); `material` is case, plate and
- * holder; `body` the case alone.
+ * the bottom plate off, and that its adjuster's access line (the spec's
+ * backstop.access) is clear and short enough for a hex key. `keeper` is the
+ * keeper with its adjuster as installed, in the socket frame; `sliding` the
+ * keeper as it slides in (snap arm pressed down, adjuster screwed back);
+ * `material` is case, plate and holder; `body` the case alone; `access` the
+ * obstacles for the access lines by name (default: `material`). The plate
+ * and the battery bay are off while the adjusters are set, but they are
+ * reported too.
  */
-export function checkKeepers(mf: ManifoldToplevel, half: SpecHalf, keeper: Manifold, sliding: Manifold, material: Manifold, body: Manifold): KeeperReport {
+export function checkKeepers(
+  mf: ManifoldToplevel,
+  half: SpecHalf,
+  keeper: Manifold,
+  sliding: Manifold,
+  material: Manifold,
+  body: Manifold,
+  access: Record<string, Manifold | null> = { material },
+): KeeperReport {
   const start = performance.now()
   const keys = half.keys.filter(k => k.socket == SOCKET_ID)
   const placed = keys.map(k => keeper.transform(socketPose(k).elements as unknown as Mat4))
@@ -366,17 +387,62 @@ export function checkKeepers(mf: ManifoldToplevel, half: SpecHalf, keeper: Manif
     swept.delete()
     const wayInOverlapMm3 = r3(overlapVolume(sweep, body))
     sweep.delete()
-    const knobBottom = PAD_RANGE[0] - ADJUSTER_LENGTH - ADJUSTER.knob.height
-    const r = ADJUSTER.knob.radius + KNOB_ACCESS.marginMm
-    const finger = mf.Manifold.cylinder(KNOB_ACCESS.depthMm, r, r, 32)
-      .translate([ADJUSTER.at[0], ADJUSTER.at[1], knobBottom - KNOB_ACCESS.depthMm])
-    const fingerPlaced = finger.transform(socketPose(k).elements as unknown as Mat4)
-    finger.delete()
-    const knobAccessOverlapMm3 = r3(overlapVolume(fingerPlaced, body))
-    fingerPlaced.delete()
-    const ok = [installedOverlapMm3, insertionOverlapMm3, wayInOverlapMm3, knobAccessOverlapMm3].every(v => v <= KEEPER_TOUCH_MM3) && Object.keys(keeperOverlaps).length == 0
-    return { id: k.id, installedOverlapMm3, keeperOverlaps, insertionOverlapMm3, wayInOverlapMm3, knobAccessOverlapMm3, ok }
+    // The access line: a ø6 cylinder down the adjuster axis from the hex socket, cut at the plate's top plane.
+    const line = k.backstop!.access!
+    const [p0, p1] = line.axis.map(p => new Vector3(...p))
+    const length = p0.distanceTo(p1)
+    const r = line.diameter / 2
+    const lineSolid = (len: number) => {
+      const c = mf.Manifold.cylinder(len, r, r, 48).translate([ADJUSTER.at[0], ADJUSTER.at[1], ADJUSTER_BOTTOM - len])
+      const placedLine = c.transform(socketPose(k).elements as unknown as Mat4)
+      const out = placedLine.trimByPlane([0, 0, 1], p0.z + 0.01)
+      c.delete()
+      placedLine.delete()
+      return out
+    }
+    const obstacles: [string, Manifold][] = [
+      ...(Object.entries(access).filter(([, m]) => m) as [string, Manifold][]),
+      ...keys.flatMap((other, j): [string, Manifold][] => (j != i && centres[i].distanceTo(centres[j]) <= 80 ? [[other.id, placed[j]]] : [])),
+    ]
+    const blocked = (solid: Manifold) =>
+      obstacles.flatMap(([name, m]): [string, number][] => {
+        const v = overlapVolume(solid, m)
+        return v > ACCESS_TOUCH_MM3 ? [[name, r3(v)]] : []
+      })
+    const whole = lineSolid(length + r)
+    const accessBlockedBy = Object.fromEntries(blocked(whole))
+    whole.delete()
+    // Where the line first meets an obstacle, to 0.1 mm.
+    let free = length
+    if (Object.keys(accessBlockedBy).length) {
+      let lo = 0, hi = length + r
+      while (hi - lo > 0.1) {
+        const mid = (lo + hi) / 2
+        const part = lineSolid(mid)
+        if (blocked(part).length) hi = mid
+        else lo = mid
+        part.delete()
+      }
+      free = lo
+    }
+    const accessLengthMm = r3(length)
+    const accessReachable = length + HEX.depth <= HEX.key.longArm[0]
+    const accessClear = Object.keys(accessBlockedBy).length == 0 && accessReachable
+    const ok = [installedOverlapMm3, insertionOverlapMm3, wayInOverlapMm3].every(v => v <= KEEPER_TOUCH_MM3) && Object.keys(keeperOverlaps).length == 0
+    return { id: k.id, installedOverlapMm3, keeperOverlaps, insertionOverlapMm3, wayInOverlapMm3, ok, accessBlockedBy, accessLengthMm, accessReachable, accessFreeMm: r3(free), accessClear }
   })
   placed.forEach(p => p.delete())
-  return { side: half.side, keys: results, ok: results.filter(r => r.ok).length, ms: Math.round(performance.now() - start) }
+  return { side: half.side, keys: results, ok: results.filter(r => r.ok).length, accessClear: results.filter(r => r.accessClear).length, ms: Math.round(performance.now() - start) }
+}
+
+/** The half's reserved regions of one kind (spec 0.3 `reserved`), as solids in the half frame; null when there are none. */
+export function reservedSolid(mf: ManifoldToplevel, half: SpecHalf, kind: SpecHalf['reserved'][number]['kind']): Manifold | null {
+  const parts = (half.reserved ?? []).filter(r => r.kind == kind).map(r => {
+    const g = r.clearanceMm
+    return boxSolid(mf, { min: r.box.min.map(v => v - g) as Box3['min'], max: r.box.max.map(v => v + g) as Box3['max'] }, poseMatrix(r.pose))
+  })
+  if (!parts.length) return null
+  const out = mf.Manifold.union(parts)
+  parts.forEach(p => p.delete())
+  return out
 }

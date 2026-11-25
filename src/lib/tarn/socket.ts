@@ -40,9 +40,9 @@
  * The pocket between them is open on all four sides for links.
  *
  * The backstop is the keeper (a printed plate under the island, its four
- * tongues in the windows, held by a snap) and the adjuster: a printed
- * thumbscrew in a thread in the keeper, under the hotswap socket. Turned up
- * finger-tight before any switch goes in, it holds the island against the
+ * tongues in the windows, held by a snap) and the adjuster: a printed set
+ * screw in a thread in the keeper, under the hotswap socket, with a socket for
+ * a 2.5 mm hex key (ADR 0014). Turned up snug before any switch goes in, it holds the island against the
  * spacer's underside with no gap, whatever the stack and print tolerances. It
  * is rigid in the load direction (the thread is self-locking), so 30 N of
  * switch insertion does not turn it, and a pulled switch pulls the island
@@ -56,8 +56,9 @@
  *    open sides.
  * 3. Lay its keeper on it, 0.75 mm toward +Y from its place, and slide it
  *    toward -Y until the nub clicks into P3b's hole.
- * 4. For each key, turn the adjuster's knob up finger-tight: it presses the
- *    island against the spacer's underside.
+ * 4. For each key, turn the adjuster up with a 2.5 mm hex key, along its
+ *    access line, until it is snug: it presses the island against the
+ *    spacer's underside.
  * 5. Bottom plate on.
  * 6. Switches in from the top, at any time. Swapping them needs no
  *    re-adjustment.
@@ -205,25 +206,36 @@ export const CONTACTS: XY[] = [[0, -5.9], [-5, -3.8]]
 export const ISLAND_CLEARANCE = 0.3
 
 /**
- * The adjuster: a printed thumbscrew under the hotswap socket, in a thread in
- * the keeper. The thread is a round single-start thread made by twisting an
- * off-centre circle (radius `lobe`, `offset` off the axis): 1.4 to 2.6 mm
- * radius, 1.2 mm deep, pitch `pitch`, right-hand. The keeper's thread is the
- * same with `clearance` more radius. A `pad` (centred, small enough to pass
- * through the keeper's thread) pushes on the socket body between its two
- * receptacles, wholly under the body; a knurled `knob` below the keeper turns
- * it.
+ * The adjuster (Tarn ADR 0014): a printed set screw under the hotswap socket,
+ * in a thread in the keeper, turned with a 2.5 mm hex key from below. The
+ * thread is a round single-start thread made by twisting an off-centre circle
+ * (radius `lobe`, `offset` off the axis): 2.0 to 2.8 mm radius, 0.8 mm deep,
+ * pitch `pitch`, right-hand. The keeper's thread is the same with `clearance`
+ * more radius. A `pad` (centred, small enough to pass through the keeper's
+ * thread) pushes on the socket body between its two receptacles, wholly under
+ * the body. The hex socket is in its bottom face, on the axis.
  */
 export const ADJUSTER = {
   at: [-2.5, -4.85] as XY,
   pitch: 2.0,
-  lobe: 2.0,
-  offset: 0.6,
+  lobe: 2.4,
+  offset: 0.4,
   clearance: 0.25,
   pad: { radius: 1.5, height: 0.4 },
-  thread: 3.5,
-  knob: { radius: 3.6, height: 1.6, notches: 12 },
 } as const
+/**
+ * The hex socket for a 2.5 mm hex key, ISO 2936: across flats s 2.46 to 2.50,
+ * across corners e 2.75 to 2.82, short arm 18.5 to 20.5, long arm 54.5 to
+ * 58.5 mm [bb-hex] (Brighton-Best's ISO 2936 data sheet; the 2014 edition
+ * corrected some across-corner values, unverified for this size). The printed
+ * socket is `across` flats (the key's largest plus 0.1 mm print allowance,
+ * unverified) and `depth` deep, 1.2 x the key size; ISO 4762's M3 socket asks
+ * for at least 1.3 mm of key engagement in steel, and plastic needs more
+ * (our choice, unverified).
+ */
+export const HEX = { across: 2.6, depth: 3.0, key: { s: [2.46, 2.5], e: [2.75, 2.82], shortArm: [18.5, 20.5], longArm: [54.5, 58.5] } } as const
+/** The adjuster's access line (Tarn ADR 0014): a straight ø6 mm line along its axis, from the bottom plate's plane to the hex socket. */
+export const ACCESS = { diameter: 6 } as const
 
 /**
  * The keeper's top. The socket body can sit up to SOCKET_TOL lower than
@@ -259,7 +271,7 @@ export const PAD_RANGE: [number, number] = [
   round(SOCKET_BOTTOM - SOCKET_TOL - TOL.case - TOL.part - 0.05, 3),
   round(SOCKET_BOTTOM + SOCKET_TOL + TOL.case + TOL.part + 0.05, 3),
 ]
-/** Pad top to knob top. With the pad at its highest the knob stays 0.2 mm under the keeper. */
+/** Pad top to the adjuster's bottom face (the hex socket's mouth). With the pad at its highest the bottom stays 0.2 mm under the keeper. */
 export const ADJUSTER_LENGTH = round(PAD_RANGE[1] - KEEPER_BOTTOM + 0.2, 3)
 
 /**
@@ -328,8 +340,10 @@ export const KEEPER_TONGUES: Rect[] = [
  */
 export const KEEPER_RIM = { rect: [-8.45, -2.65, -7.75, -1.6] as Rect, top: round(SOCKET_BOTTOM + 0.4, 3) }
 
-/** Cosmos partBottom depth: the floor must stay below the posts and the adjuster knob at its lowest setting. */
-export const PART_BOTTOM_DEPTH = round(Math.max(-POST_BOTTOM, -(PAD_RANGE[0] - ADJUSTER_LENGTH - ADJUSTER.knob.height)) + 0.5, 2)
+/** Cosmos partBottom depth: the floor must stay below the posts and the adjuster at its lowest setting. */
+export const PART_BOTTOM_DEPTH = round(Math.max(-POST_BOTTOM, -(PAD_RANGE[0] - ADJUSTER_LENGTH)) + 0.5, 2)
+/** The adjuster's bottom face (the hex socket's mouth) at the nominal setting, socket frame. */
+export const ADJUSTER_BOTTOM = round(SOCKET_BOTTOM - ADJUSTER_LENGTH, 3)
 
 /** Design loads. */
 export const LOADS = {
@@ -449,9 +463,9 @@ export function boxToSwitchFrame(b: Box3, switchRotation: number): Box3 {
 export function backstopBounds(): Box3 {
   const keeper = keeperBounds()
   const [ax, ay] = ADJUSTER.at
-  const r = ADJUSTER.knob.radius
+  const r = ADJUSTER.lobe + ADJUSTER.offset
   return {
-    min: [round(Math.min(keeper.min[0], ax - r)), round(Math.min(keeper.min[1], ay - r)), round(SOCKET_BOTTOM - ADJUSTER_LENGTH - ADJUSTER.knob.height, 3)],
+    min: [round(Math.min(keeper.min[0], ax - r)), round(Math.min(keeper.min[1], ay - r)), ADJUSTER_BOTTOM],
     max: [keeper.max[0], keeper.max[1], Math.max(keeper.max[2], SOCKET_BOTTOM)],
   }
 }
@@ -668,28 +682,32 @@ function thread(mf: ManifoldToplevel, z0: number, length: number, extra: number)
     .translate([at[0], at[1], z0])
 }
 
-/** The adjuster with its pad top at `padTop` (socket frame). */
+/** The hex socket's outline (flats across X), around the adjuster axis. */
+function hexOutline(): XY[] {
+  const r = HEX.across / Math.sqrt(3) // circumradius
+  return Array.from({ length: 6 }, (_, i) => [ADJUSTER.at[0] + r * Math.cos((Math.PI / 3) * i), ADJUSTER.at[1] + r * Math.sin((Math.PI / 3) * i)] as XY)
+}
+
+/** The adjuster with its pad top at `padTop` (socket frame): thread, pad, and the hex socket in its bottom face. */
 export function adjusterManifold(mf: ManifoldToplevel, padTop: number): Manifold {
-  const { at, pad, knob } = ADJUSTER
+  const { at, pad } = ADJUSTER
   const threadTop = padTop - pad.height
   const threadBottom = padTop - ADJUSTER_LENGTH
   const core = thread(mf, threadBottom, threadTop - threadBottom, 0)
   const padSolid = mf.Manifold.cylinder(pad.height + 0.01, pad.radius, pad.radius, SEGMENTS).translate([at[0], at[1], threadTop - 0.01])
-  // Knurled knob: a disc with notches round its rim.
-  let knobSolid = mf.Manifold.cylinder(knob.height + 0.01, knob.radius, knob.radius, SEGMENTS).translate([at[0], at[1], threadBottom - knob.height])
-  for (let i = 0; i < knob.notches; i++) {
-    const a = (2 * Math.PI * i) / knob.notches
-    const notch = mf.Manifold.cylinder(knob.height + 0.2, 0.45, 0.45, 12).translate([at[0] + knob.radius * Math.cos(a), at[1] + knob.radius * Math.sin(a), threadBottom - knob.height - 0.1])
-    const next = knobSolid.subtract(notch)
-    knobSolid.delete()
-    notch.delete()
-    knobSolid = next
-  }
-  const out = mf.Manifold.union([core, padSolid, knobSolid])
-  core.delete()
-  padSolid.delete()
-  knobSolid.delete()
+  const body = mf.Manifold.union([core, padSolid])
+  const socket = mf.Manifold.extrude([hexOutline()], HEX.depth + 0.5).translate([0, 0, threadBottom - 0.5])
+  const out = body.subtract(socket)
+  for (const m of [core, padSolid, body, socket]) m.delete()
   return out
+}
+
+/** A 2.5 mm hex key (ISO 2936, its largest across flats) in the adjuster's socket, turned `turnDeg` about the axis, for the tests. */
+export function hexKeyManifold(mf: ManifoldToplevel, padTop: number, turnDeg = 0): Manifold {
+  const r = HEX.key.s[1] / Math.sqrt(3)
+  const outline = Array.from({ length: 6 }, (_, i) => [r * Math.cos((Math.PI / 3) * i), r * Math.sin((Math.PI / 3) * i)] as XY)
+  const bottom = padTop - ADJUSTER_LENGTH
+  return mf.Manifold.extrude([outline], HEX.depth + 5).rotate([0, 0, turnDeg]).translate([ADJUSTER.at[0], ADJUSTER.at[1], bottom + HEX.depth - (HEX.depth + 5)])
 }
 
 /** The keeper (from its OpenCascade mesh) with the adjuster's thread cut through it. */

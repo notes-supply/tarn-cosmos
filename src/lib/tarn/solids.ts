@@ -594,7 +594,7 @@ export interface Keepers {
   /** The keeper and the adjuster as installed, socket frame. */
   keeper: TriMesh
   adjuster: TriMesh
-  /** For printing: the keeper underside down, the adjuster knob down, both at z = 0. */
+  /** For printing: the keeper underside down, the adjuster hex-socket end down, both at z = 0. */
   keeperPrint: TriMesh
   adjusterPrint: TriMesh
   /** Every keeper and adjuster of the half in place (half frame), one closed shell each. */
