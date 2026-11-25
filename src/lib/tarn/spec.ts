@@ -35,6 +35,7 @@ import Trsf from '$lib/worker/modeling/transformation'
 import { Matrix4 } from 'three/src/math/Matrix4.js'
 import { deserialize } from '../../routes/beta/lib/serialize'
 import { type Box3, partFlipped, type SpecSeat, specSeat, switchRotation } from './harness'
+import { retainers, SOCKET_ID } from './socket'
 
 export const TARN_SPEC_VERSION = '0.2'
 export { partFlipped }
@@ -57,7 +58,7 @@ export interface SpecKey {
   switchRotation: number | null
   /** Room under the switch for the harness island, in the switch frame. null for 'other'. */
   seat: SpecSeat | null
-  /** Declared by spec 0.2 (ADR 0006 item 7). This exporter builds neither yet. */
+  /** Declared by spec 0.2 (ADR 0006 item 7). The Tarn socket (choc-v2-tarn, socket.ts) has both; Cosmos's own sockets have neither. */
   backstop?: Retainer
   clamp?: Retainer
 }
@@ -288,6 +289,7 @@ export function specHalf(cosmos: CosmosKeyboard, ctx: HalfContext): SpecHalf {
       pose: partPose(trsfs[i], half, side),
       switchRotation: switchRotation(key, family),
       seat: specSeat(key, family),
+      ...(key.type == SOCKET_ID ? retainers(switchRotation(key, family)!) : {}),
     })
   })
 

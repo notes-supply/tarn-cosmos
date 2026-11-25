@@ -28,7 +28,9 @@ import type { BufferGeometry } from 'three'
 import { Matrix4 } from 'three/src/math/Matrix4.js'
 import { Vector3 } from 'three/src/math/Vector3.js'
 import { partFlipped } from './harness'
-import { type HalfContext, isSpecKey, keycapSeat, partMatrix } from './spec'
+import { islandPose } from './seat'
+import { keeperPrintSolid, keeperSolid, SOCKET_ID } from './socket'
+import { type HalfContext, isSpecKey, keycapSeat, partMatrix, type SpecHalf } from './spec'
 
 /** A triangle mesh in the half frame. */
 export interface TriMesh {
@@ -428,19 +430,27 @@ export async function switchMesh(ctx: HalfContext, i: number): Promise<TriMesh |
   return placedGeometry(part, pose.multiply(partFlipped(key) ? ROT_Z_180 : new Matrix4()))
 }
 
+/** Cosmos's keycap model for key `i`, at rest, in the half frame. */
+export async function keycapMesh(ctx: HalfContext, i: number): Promise<TriMesh | null> {
+  const key = ctx.conf.keys[i]
+  const cap = await keyGeometry(key)
+  if (!cap) return null
+  const pose = partMatrix(ctx.geo.keyHolesTrsfs[i], ctx.half, ctx.side)
+  return placedGeometry(cap, pose.multiply(new Matrix4().makeTranslation(0, 0, keycapSeat(key))))
+}
+
 /**
  * Switches and keycaps at rest, placed with the same poses as the spec,
  * using Cosmos's own part and keycap models.
  */
 export async function switchAndKeycapMeshes(ctx: HalfContext) {
-  const { conf, geo, half, side } = ctx
+  const { conf } = ctx
   const switches: TriMesh[] = []
   const keycaps: TriMesh[] = []
   const missing = new Set<string>()
   for (let i = 0; i < conf.keys.length; i++) {
     const key = conf.keys[i]
     if (!isSpecKey(key)) continue
-    const pose = partMatrix(geo.keyHolesTrsfs[i], half, side)
     try {
       const part = await switchMesh(ctx, i)
       if (part) switches.push(part)
@@ -448,8 +458,8 @@ export async function switchAndKeycapMeshes(ctx: HalfContext) {
       missing.add(`switch model for ${key.type}: ${(e as Error).message}`)
     }
     try {
-      const cap = await keyGeometry(key)
-      if (cap) keycaps.push(placedGeometry(cap, pose.clone().multiply(new Matrix4().makeTranslation(0, 0, keycapSeat(key)))))
+      const cap = await keycapMesh(ctx, i)
+      if (cap) keycaps.push(cap)
     } catch (e) {
       missing.add(`keycap model for ${key.type}: ${(e as Error).message}`)
     }
@@ -495,4 +505,56 @@ export function signedVolume(mesh: TriMesh) {
       + p[a + 2] * (p[b] * p[c + 1] - p[b + 1] * p[c])
   }
   return v / 6
+}
+
+// ---------------------------------------------------------------------------
+// Tarn socket keepers (socket.ts)
+
+/** A mesh moved by a matrix (no mirroring: spec poses are proper rotations). */
+export function transformMesh(mesh: TriMesh, matrix: Matrix4): TriMesh {
+  const positions = new Float32Array(mesh.positions.length)
+  const v = new Vector3()
+  for (let i = 0; i < positions.length; i += 3) {
+    v.set(mesh.positions[i], mesh.positions[i + 1], mesh.positions[i + 2]).applyMatrix4(matrix)
+    positions[i] = v.x
+    positions[i + 1] = v.y
+    positions[i + 2] = v.z
+  }
+  return { positions, indices: mesh.indices }
+}
+
+export interface Keepers {
+  /** One keeper in the switch frame, as installed. */
+  template: TriMesh
+  /** The same keeper as it slides in, its snap arm pressed down. */
+  sliding: TriMesh
+  /** The keeper for printing: underside on the bed at z = 0. */
+  print: TriMesh
+  printStep: Uint8Array
+  /** Every keeper of the half in its place (half frame), one closed shell each. */
+  placed: TriMesh
+  ids: string[]
+}
+
+/** The keepers of a half's Tarn socket keys, placed with the spec poses. null when the half has none. */
+export async function tarnKeepers(half: SpecHalf, opts: MeshOptions): Promise<Keepers | null> {
+  const keys = half.keys.filter(k => k.socket == SOCKET_ID)
+  if (!keys.length) return null
+  const solid = keeperSolid()
+  const slidingSolid = keeperSolid(false)
+  const printSolid = keeperPrintSolid()
+  const template = shapeMesh(solid, opts)
+  const sliding = shapeMesh(slidingSolid, opts)
+  slidingSolid.delete()
+  const print = shapeMesh(printSolid, opts)
+  const printStep = await stepFile([{ name: 'Tarn Keeper', shape: printSolid }])
+  solid.delete()
+  printSolid.delete()
+  const placed = mergeMeshes(keys.map(k => transformMesh(template, islandPose(k))))
+  return { template, sliding, print, printStep, placed, ids: keys.map(k => k.id) }
+}
+
+/** Matrix4 from a row-major spec pose. */
+export function poseFromSpec(p: number[]): Matrix4 {
+  return new Matrix4().set(...(p as [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number]))
 }

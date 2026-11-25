@@ -14,9 +14,13 @@
  *   holder.step, holder.stl  microcontroller holder (when the design has one)
  *   assembly.step            every case part as a named assembly (what Cosmos's STEP download holds)
  *   switches.stl, keycaps.stl  Cosmos's switch and keycap models at rest, in position
+ *   keepers.stl              Tarn socket keepers in place (designs with choc-v2-tarn sockets)
+ *   keeper.stl, keeper.step  one keeper laid out for printing
  *   render-{top,front,iso}.png
+ *   render-socket-*.png      close-ups of one Tarn socket with its island and keeper
  * plus <outdir>/export.json with timings, warnings, Cosmos's own design checks,
- * the fused-solid statistics, the harness seat check and the retention report.
+ * the fused-solid statistics, the harness seat check, the keeper checks and the
+ * retention report.
  *
  * Exit status: 0 on success, 1 on failure, 2 on bad arguments, 3 when the
  * outputs were written but Cosmos reports errors (e.g. colliding keycaps).
@@ -125,20 +129,22 @@ async function main() {
     for (const r of results) console.log(`  ${r.severity}: ${r.message}`)
   }
 
-  // Spec 0.2 declares a socket backstop and an island clamp per key (ADR 0006 item 7). This
-  // exporter does not build them yet, so report every switch key that lacks them.
+  // Spec 0.2 declares a socket backstop and an island clamp per key (ADR 0006 item 7). Only the
+  // Tarn socket (choc-v2-tarn) has them; report every switch key that lacks them.
   const switchKeys = spec.halves.flatMap(h => h.keys.filter(k => k.switch != 'other'))
   const retention = Object.fromEntries((['backstop', 'clamp'] as const).map(kind => {
     const missing = switchKeys.filter(k => !k[kind]).map(k => k.id)
     return [kind, { declared: switchKeys.length - missing.length, missing }]
   }))
   for (const [kind, r] of Object.entries(retention)) {
-    if (r.missing.length) warnings.push(`${kind}: missing on ${r.missing.length} of ${switchKeys.length} switch keys (ADR 0006 item 7; not built yet)`)
+    if (r.missing.length) warnings.push(`${kind}: missing on ${r.missing.length} of ${switchKeys.length} switch keys (ADR 0006 item 7; only the choc-v2-tarn socket has one)`)
   }
   const unrotated = switchKeys.filter(k => k.switchRotation == null).map(k => k.id)
   if (unrotated.length) warnings.push(`switchRotation unknown for ${unrotated.length} keys (switch model orientation not measured): ${unrotated.slice(0, 5).join(', ')}`)
   const fused: Record<string, any> = {}
   const harnessSeat: Record<string, any> = {}
+  const keeperChecks: Record<string, any> = {}
+  const closeups: Record<string, any> = {}
   const rotationCheck: Record<string, { checked: number; landed: number; worstOffsetMm: number; misses: string[] }> = {}
 
   if (!opts.specOnly) {
@@ -147,7 +153,9 @@ async function main() {
     await setup()
     timings.openCascadeSetupMs = Math.round(performance.now() - tSetup)
     const solids = await import('$lib/tarn/solids')
-    const { measureSeats, poseMatrix } = await import('$lib/tarn/seat')
+    const { checkKeepers, islandPose, measureSeats, poseMatrix } = await import('$lib/tarn/seat')
+    const tarnSocket = await import('$lib/tarn/socket')
+    const { socketCloseups } = await import('$lib/tarn/closeup')
     const { matchContacts, switchFacts } = await import('$lib/tarn/harness')
     const { isSpecKey } = await import('$lib/tarn/spec')
     const { render, VIEWS } = await import('$lib/tarn/render')
@@ -207,19 +215,61 @@ async function main() {
       }
       const meshes = { body: fuse.body.mesh, plate: fuse.plate?.mesh ?? null, holder: fuse.holder?.mesh ?? null }
 
-      // Harness seats: the clear box under every switch, and the planned stack against the case.
-      const obstacles = mf.Manifold.union([fuse.body.manifold, ...(fuse.plate ? [fuse.plate.manifold] : []), ...(fuse.holder ? [fuse.holder.manifold] : [])])
+      // Tarn socket keepers (socket.ts), placed with the spec poses.
+      const keepers = await timed('keepers', () => solids.tarnKeepers(half, meshOpts))
+      const keeperTemplate = keepers ? solids.toManifold(mf, keepers.template) : null
+      const keeperSliding = keepers ? solids.toManifold(mf, keepers.sliding) : null
+      const keepersPlaced = keepers ? solids.toManifold(mf, keepers.placed) : null
+
+      // Harness seats: the clear box under every switch, and the planned stack against the case
+      // (and the keepers, which are case material once fitted).
+      const material = mf.Manifold.union([fuse.body.manifold, ...(fuse.plate ? [fuse.plate.manifold] : []), ...(fuse.holder ? [fuse.holder.manifold] : [])])
+      const obstacles = keepersPlaced ? material.add(keepersPlaced) : material
       const seats = await timed('harnessSeat', () => measureSeats(mf, ctx, half, obstacles))
-      obstacles.delete()
-      for (const f of [fuse.body, fuse.plate, fuse.holder]) f?.manifold.delete()
       harnessSeat[ctx.side] = seats
       for (const [t, n] of Object.entries(seats.fits)) {
         const onPlate = seats.fitsWithStiffenerOnPlate[t]
         console.log(`${ctx.side}: harness stack with a ${t} mm stiffener fits under ${n} of ${seats.keys.length} switches (${onPlate} with the stiffener cut back to the plate)`)
-        if (n < seats.keys.length) warnings.push(`${ctx.side}: the planned harness stack (${t} mm stiffener) does not fit under ${seats.keys.length - n} switches (harnessSeat in export.json)`)
+        if (n < seats.keys.length) warnings.push(`${ctx.side}: the harness stack (${t} mm stiffener) does not fit under ${seats.keys.length - n} switches (harnessSeat in export.json)`)
+      }
+      if (keeperTemplate) {
+        const report = await timed('keeperChecks', () => checkKeepers(mf, half, keeperTemplate, keeperSliding!, material, fuse.body.manifold))
+        keeperChecks[ctx.side] = report
+        console.log(`${ctx.side}: keepers fit, clear their neighbours and can go in at ${report.ok} of ${report.keys.length} Tarn sockets`)
+        if (report.ok < report.keys.length) {
+          warnings.push(`${ctx.side}: ${report.keys.length - report.ok} keepers collide or cannot go in: ${report.keys.filter(k => !k.ok).map(k => k.id).join(', ')} (keeperChecks in export.json)`)
+        }
       }
 
       const placed = await timed('switchesAndKeycaps', () => solids.switchAndKeycapMeshes(ctx))
+
+      // Close-ups of one Tarn socket: the index finger's home key, or the first Tarn key.
+      if (keepers && opts.renders) {
+        await timed('closeups', async () => {
+          const confIndex = ctx.conf.keys.flatMap((k, i) => (isSpecKey(k) ? [i] : []))
+          const n = Math.max(0, half.keys.findIndex(k => k.id == `${ctx.side}-fingers-c1-r2` && k.socket == tarnSocket.SOCKET_ID))
+          const key = half.keys[n].socket == tarnSocket.SOCKET_ID ? half.keys[n] : half.keys.find(k => k.socket == tarnSocket.SOCKET_ID)!
+          const i = confIndex[half.keys.indexOf(key)]
+          const islandShapes = tarnSocket.islandSolids()
+          const views = socketCloseups(mf, {
+            pose: islandPose(key),
+            caseBody: fuse.body.manifold,
+            keeper: keepers.template,
+            island: islandShapes.map(s => ({ name: s.name, mesh: solids.shapeMesh(s.shape, meshOpts) })),
+            switchMesh: await solids.switchMesh(ctx, i).catch(() => null),
+            keycapMesh: await solids.keycapMesh(ctx, i).catch(() => null),
+          })
+          islandShapes.forEach(s => s.shape.delete())
+          closeups[ctx.side] = { key: key.id, views: views.map(v => ({ file: `render-socket-${v.name}.png`, description: v.description })) }
+          for (const v of views) out(`renderSocket${v.name.replace(/(^|-)(\w)/g, (_, __, c) => c.toUpperCase())}`, `render-socket-${v.name}.png`, v.png)
+        })
+      }
+      obstacles.delete()
+      if (keepersPlaced) material.delete()
+      keeperTemplate?.delete()
+      keeperSliding?.delete()
+      keepersPlaced?.delete()
+      for (const f of [fuse.body, fuse.plate, fuse.holder]) f?.manifold.delete()
       warnings.push(...placed.missing.map(m => `${ctx.side}: no ${m}`))
 
       // switchRotation self-check: the datasheet contacts, turned by switchRotation, land on the pins of the switch model written to switches.stl.
@@ -248,6 +298,11 @@ async function main() {
         if (meshes.holder) out('holderStl', 'holder.stl', solids.binarySTL(meshes.holder))
         if (placed.switches.indices.length) out('switchesStl', 'switches.stl', solids.binarySTL(placed.switches))
         if (placed.keycaps.indices.length) out('keycapsStl', 'keycaps.stl', solids.binarySTL(placed.keycaps))
+        if (keepers) {
+          out('keepersStl', 'keepers.stl', solids.binarySTL(keepers.placed))
+          out('keeperStl', 'keeper.stl', solids.binarySTL(keepers.print))
+          out('keeperStep', 'keeper.step', step(keepers.printStep))
+        }
       })
       for (const [name, m] of Object.entries({ case: meshes.body, plate: meshes.plate, holder: meshes.holder })) {
         if (m && solids.signedVolume(m) <= 0) warnings.push(`${ctx.side}: ${name} mesh has non-positive signed volume (inside-out triangles?)`)
@@ -257,6 +312,7 @@ async function main() {
         await timed('renders', () => {
           const items = [
             { mesh: meshes.body, color: [150, 170, 200] as [number, number, number] },
+            ...(keepers ? [{ mesh: keepers.placed, color: [235, 140, 50] as [number, number, number] }] : []),
             ...(meshes.plate ? [{ mesh: meshes.plate, color: [110, 120, 140] as [number, number, number] }] : []),
             ...(meshes.holder ? [{ mesh: meshes.holder, color: [120, 180, 120] as [number, number, number] }] : []),
             { mesh: placed.switches, color: [90, 90, 100] as [number, number, number] },
@@ -288,6 +344,9 @@ async function main() {
         fused,
         switchRotationCheck: rotationCheck,
         harnessSeat,
+        keeperChecks,
+        backstopStrength: switchKeys.some(k => k.socket == 'choc-v2-tarn') ? (await import('$lib/tarn/strength')).backstopStrength() : null,
+        closeups,
         retention,
       },
       null,

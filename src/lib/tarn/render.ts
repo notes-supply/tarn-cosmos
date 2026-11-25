@@ -37,7 +37,8 @@ const norm = (v: Vec): Vec => {
 const cross = (a: Vec, b: Vec): Vec => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 const dot = (a: Vec, b: Vec) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
-export function render(items: RenderItem[], view: View, width = 1024, height = 1024, supersample = 2): Uint8Array {
+/** `edgeMm`: depth step (mm) drawn as an outline; close-ups of one socket need a finer one than whole-case views. */
+export function render(items: RenderItem[], view: View, width = 1024, height = 1024, supersample = 2, edgeMm = 1.5): Uint8Array {
   const look = norm(view.look)
   const right = norm(cross(look, view.up))
   const up = cross(right, look)
@@ -114,7 +115,7 @@ export function render(items: RenderItem[], view: View, width = 1024, height = 1
   }
 
   // Darken pixels at depth discontinuities so silhouettes and steps read clearly.
-  const edge = 1.5 // mm
+  const edge = edgeMm
   const far = (a: number, b: number) => (a == Infinity) != (b == Infinity) || Math.abs(a - b) > edge
   for (let y = 1; y < H - 1; y++) {
     for (let x = 1; x < W - 1; x++) {

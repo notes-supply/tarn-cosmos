@@ -16,9 +16,8 @@
  * (x, y) there is (x, -y) here.
  *
  * Sources are the sections of docs/research/switches.md and
- * docs/research/flex-pcb.md that cite the manufacturer drawings. Values marked
- * provisional are working numbers that the test coupon (ADR 0006 item 9) will
- * replace.
+ * docs/research/flex-pcb.md that cite the manufacturer drawings, and ADR 0009
+ * for the stack.
  */
 
 import { PART_INFO, partBottom, socketSize } from '$lib/geometry/socketsParts'
@@ -127,16 +126,15 @@ export const SWITCHES: Record<SwitchFamily, SwitchFacts> = {
 }
 
 /**
- * The provisional harness stack under a switch, top to bottom: stiffener, flex,
- * then the hotswap socket body (ADR 0006 item 8, flex-pcb.md §2.5).
+ * The harness stack under a switch, top to bottom: stiffener, flex, then the
+ * hotswap socket body. ADR 0009 fixes the stiffener at FR4 1.6 mm on the
+ * switch side of every island.
  */
 export const STACK = {
   flex: 0.12,
   flexSource: 'flex-pcb.md §2.8 G1: 1 layer, 50 µm PI, 18 µm Cu, 0.12 mm finished',
-  /** Stiffener thicknesses to try. The coupon settles the real one. */
   stiffeners: [
-    { thickness: 1.2, source: 'flex-pcb.md §2.5: FR4 1.2 mm on a 0.12 mm flex (provisional)' },
-    { thickness: 1.48, source: 'ADR 0006 item 8, switches.md §2.4: flex plus stiffener make up the 1.6 mm board the socket is drawn for (provisional)' },
+    { thickness: 1.6, source: 'ADR 0009: FR4 1.6 mm on the switch side of every island (1.6 + 0.12 = 1.72, inside the ±10 % of the 1.6 mm board the socket is drawn for)' },
   ],
 } as const
 
