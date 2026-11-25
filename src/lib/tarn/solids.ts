@@ -223,6 +223,58 @@ export function manifoldMesh(solid: Manifold): TriMesh {
   return { positions, indices: Uint32Array.from(m.triVerts) }
 }
 
+/** How far (mm) separatePinches moves each sheet's vertices into its own material. */
+export const PINCH_SEPARATION_MM = 1e-3
+
+/**
+ * Where a solid touches itself along a line or at a point, Manifold keeps the
+ * two sheets of surface apart as distinct vertices in the same place. A reader
+ * that merges vertices by position (every STL reader) joins them into edges
+ * with four triangles. Move each sheet's copy of such a vertex by
+ * PINCH_SEPARATION_MM along its inward normal, so the file is a 2-manifold to
+ * those readers too. Vertices joined by an edge that float32 rounding
+ * collapses move together and stay collapsed. Returns the number of vertices moved.
+ */
+export function separatePinches(mesh: TriMesh): number {
+  const p = mesh.positions
+  const n = p.length / 3
+  const { remap } = byPosition(mesh)
+  // Vertices joined by a zero-length edge belong to the same sheet.
+  const parent = Array.from({ length: n }, (_, i) => i)
+  const find = (a: number): number => (parent[a] == a ? a : (parent[a] = find(parent[a])))
+  const normal = new Float64Array(3 * n)
+  for (let t = 0; t < mesh.indices.length; t += 3) {
+    const v = [mesh.indices[t], mesh.indices[t + 1], mesh.indices[t + 2]]
+    for (let e = 0; e < 3; e++) if (remap[v[e]] == remap[v[(e + 1) % 3]]) parent[find(v[e])] = find(v[(e + 1) % 3])
+    const [a, b, c] = v
+    const ux = p[3 * b] - p[3 * a], uy = p[3 * b + 1] - p[3 * a + 1], uz = p[3 * b + 2] - p[3 * a + 2]
+    const wx = p[3 * c] - p[3 * a], wy = p[3 * c + 1] - p[3 * a + 1], wz = p[3 * c + 2] - p[3 * a + 2]
+    const cross = [uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx]
+    for (const i of v) for (let k = 0; k < 3; k++) normal[3 * i + k] += cross[k]
+  }
+  // Sheets (clusters) per position.
+  const clusters = new Map<number, Map<number, number[]>>()
+  for (let i = 0; i < n; i++) {
+    const at = clusters.get(remap[i]) ?? new Map<number, number[]>()
+    const root = find(i)
+    at.set(root, [...(at.get(root) ?? []), i])
+    clusters.set(remap[i], at)
+  }
+  let moved = 0
+  for (const sheets of clusters.values()) {
+    if (sheets.size < 2) continue
+    for (const vertices of sheets.values()) {
+      const m = [0, 1, 2].map(k => vertices.reduce((sum, i) => sum + normal[3 * i + k], 0))
+      const len = Math.hypot(...m) || 1
+      for (const i of vertices) {
+        for (let k = 0; k < 3; k++) p[3 * i + k] -= (PINCH_SEPARATION_MM * m[k]) / len
+        moved++
+      }
+    }
+  }
+  return moved
+}
+
 /**
  * Internal voids thinner than this (mean thickness, mm) are filled after a
  * union. They are the float-noise gaps between solids that Cosmos builds face
@@ -234,8 +286,8 @@ export interface Fused {
   manifold: Manifold
   /** The union's triangles for the STL, without triangles that float32 rounding collapses. */
   mesh: TriMesh
-  /** The STL as a position-merging reader sees it (stlTopology). */
-  stl: ReturnType<typeof stlTopology>
+  /** The STL as a position-merging reader sees it (stlTopology), its volume, and the vertices separatePinches moved. */
+  stl: ReturnType<typeof stlTopology> & { volume: number; separatedVertices: number }
   /** Solids that went into the union. */
   solids: number
   /** Internal voids filled after the union, and their total volume (mm^3, negative). */
@@ -249,11 +301,27 @@ export interface Fused {
   ms: { mesh: number; union: number }
 }
 
+/**
+ * Grid (mm) the triangulated solids are snapped to before the union. OpenCascade
+ * triangulates touching faces of different solids with vertices that differ by
+ * float noise; unioned as they are, they leave sliver triangles that Manifold
+ * collapses when the STL is read back, which drops up to 50 mm^3 of the screw
+ * attachments. Snapped to a 1 µm grid (far below the 0.01 mm meshing
+ * tolerance), the union reads back unchanged.
+ */
+export const SNAP_MM = 1e-3
+
+/** Snap coordinates to SNAP_MM, rounding halves away from zero so mirrored halves snap alike. */
+function snapped(mesh: TriMesh): TriMesh {
+  const positions = Float32Array.from(mesh.positions, x => Math.sign(x) * Math.round(Math.abs(x) / SNAP_MM) * SNAP_MM)
+  return { positions, indices: mesh.indices }
+}
+
 /** Union of every solid of `shapes`, triangulated with `opts` (the shapes are not consumed). */
 export function fuseShapes(mf: ManifoldToplevel, shapes: AnyShape[], opts: MeshOptions): Fused {
   const t0 = performance.now()
   const solids = shapes.flatMap(s => solidsOf(s))
-  const parts = solids.map(s => toManifold(mf, shapeMesh(s, opts)))
+  const parts = solids.map(s => toManifold(mf, snapped(shapeMesh(s, opts))))
   const t1 = performance.now()
   const union = mf.Manifold.union(parts)
   parts.forEach(p => p.delete())
@@ -269,11 +337,13 @@ export function fuseShapes(mf: ManifoldToplevel, shapes: AnyShape[], opts: MeshO
   const manifold = mf.Manifold.compose(kept)
   const voidVolume = voids.reduce((v, c) => v + c.volume(), 0)
   pieces.forEach(p => p.delete())
-  const mesh = withoutDegenerate(manifoldMesh(manifold))
+  const raw = manifoldMesh(manifold)
+  const separatedVertices = separatePinches(raw)
+  const mesh = withoutDegenerate(raw)
   return {
     manifold,
     mesh,
-    stl: stlTopology(mesh),
+    stl: { ...stlTopology(mesh), volume: signedVolume(mesh), separatedVertices },
     solids: solids.length,
     voidsFilled: voids.length,
     voidVolume,

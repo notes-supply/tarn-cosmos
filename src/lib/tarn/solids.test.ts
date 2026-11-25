@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, test } from 'bun:test'
 import { setup } from '../../model_gen/node-model'
 import { type Box3, contactsInSwitchFrame, matchContacts, rotateXY, switchFacts } from './harness'
 import { measureSeats, poseMatrix } from './seat'
-import { buildCaseParts, type CaseParts, type Fused, fuseShapes, inFrame, manifoldKernel, manifoldMesh, shapeMesh, signedVolume, switchMesh, type TriMesh } from './solids'
+import { buildCaseParts, type CaseParts, type Fused, fuseShapes, inFrame, manifoldKernel, manifoldMesh, shapeMesh, signedVolume, switchMesh, toManifold, type TriMesh } from './solids'
 import { buildSpec, type HalfContext, isSpecKey, type SpecHalf } from './spec'
 
 /** The Cosmos default layout with Choc V2 and with MX sockets (designs/ in the Tarn repo). */
@@ -95,17 +95,22 @@ describe.each([['Choc V2', DEFAULT_CHOC_V2], ['MX', DEFAULT_MX]])('%s: fused cas
   }, 120_000)
 
   test('each half fuses into one closed manifold, and the halves have the same volume', async () => {
+    const mf = await manifoldKernel()
     for (const side of ['left', 'right']) {
       const { body, parts } = built[side]
       expect(body.components, `${side} components`).toBe(1)
       expect(body.manifold.status(), side).toBe('NoError')
-      // Manifold's own mesh is a 2-manifold; read back by position, as STL readers do, it is closed
-      // and oriented, with no zero-area triangles. Only a few edges where two Cosmos solids touch
-      // along a line carry four triangles.
+      // Manifold's own mesh is a 2-manifold, and so is the STL read back by position, as STL readers
+      // do: closed and oriented, no zero-area triangles, no edges with four triangles.
       expect(closedAndOriented(manifoldMesh(body.manifold)), `${side} Manifold mesh closed and oriented`).toBe(true)
       expect(body.stl.degenerate, `${side} STL degenerate triangles`).toBe(0)
       expect(body.stl.unbalancedEdges, `${side} STL open or misoriented edges`).toBe(0)
-      expect(body.stl.pinchedEdges, `${side} STL pinched edges`).toBeLessThan(20)
+      expect(body.stl.pinchedEdges, `${side} STL pinched edges`).toBe(0)
+      // A reader that builds a Manifold from the STL gets the same solid back.
+      const reread = toManifold(mf, body.mesh)
+      expect(Math.abs(reread.volume() - body.stl.volume), `${side} STL read back: ${reread.volume()} vs ${body.stl.volume}`).toBeLessThan(0.01)
+      expect(Math.abs(body.stl.volume - body.volume), `${side} STL vs fused volume`).toBeLessThan(1)
+      reread.delete()
       expect(signedVolume(body.mesh), `${side} STL volume`).toBeCloseTo(body.volume, 0)
       // A union holds at least its largest part and at most all of them (plus the float-noise voids it fills).
       const volumes = parts.body.map(p => signedVolume(shapeMesh(p.shape, EXPORT_MESH)))
@@ -115,7 +120,7 @@ describe.each([['Choc V2', DEFAULT_CHOC_V2], ['MX', DEFAULT_MX]])('%s: fused cas
     }
     const [l, r] = [built.left.body, built.right.body]
     expect(Math.abs(l.volume - r.volume) / r.volume, `left ${l.volume} vs right ${r.volume}`).toBeLessThan(1e-6)
-    expect(l.genus).toBe(r.genus)
+    expect(Math.abs(l.stl.volume - r.stl.volume) / r.stl.volume, `STL left ${l.stl.volume} vs right ${r.stl.volume}`).toBeLessThan(1e-6)
   })
 
   test('the seat volume contains the switch pins', async () => {
