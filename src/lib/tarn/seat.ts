@@ -18,8 +18,12 @@ import { Vector3 } from 'three/src/math/Vector3.js'
 import { type Box3, plannedStack, roundBox, seatFootprint, STACK, switchFacts } from './harness'
 import { type HalfContext, isSpecKey, type Pose, type SpecHalf } from './spec'
 
-/** The clear box starts this far below the stiffener plane, so faces lying on the plane (the socket's underside) do not count. */
-const PLANE_GAP_MM = 1e-3
+/**
+ * The clear box and the stack are tested this far below the stiffener plane, so
+ * faces lying on the plane (the socket's underside, which the stiffener bears
+ * on) do not count. It covers the fused case's 1 µm snap (solids.ts SNAP_MM).
+ */
+export const PLANE_GAP_MM = 0.01
 /** How far below the stiffener plane the clear box is searched. */
 const SEARCH_DEPTH_MM = 100
 /** Intersections smaller than this are boolean noise (touching faces), not material. */
@@ -132,6 +136,8 @@ export function measureSeats(mf: ManifoldToplevel, ctx: HalfContext, half: SpecH
     const reservedBottom = Math.min(...key.seat.reserved.map(b => b.min[2]))
     const stacks = !opts.stacks ? [] : STACK.stiffeners.map(({ thickness }) => {
       const stack = plannedStack(facts, key.switchRotation!, top, thickness)
+      // Tested a hair below the plane it bears on; reported as planned.
+      const tested = plannedStack(facts, key.switchRotation!, top - PLANE_GAP_MM, thickness)
       const inside = (box: Box3) => {
         const solid = boxSolid(mf, box, pose)
         const overlap = solid.intersect(obstacles)
@@ -141,12 +147,12 @@ export function measureSeats(mf: ManifoldToplevel, ctx: HalfContext, half: SpecH
         return volume
       }
       const interferingParts: Record<string, number> = {}
-      for (const b of stack.boxes) {
+      for (const b of tested.boxes) {
         const v = inside(b.box)
         if (v > INTERFERENCE_MM3) interferingParts[b.name] = r3(v)
       }
       const others = Object.keys(interferingParts).filter(name => name != 'stiffener')
-      const stiffener = stack.boxes.find(b => b.name == 'stiffener')!.box
+      const stiffener = tested.boxes.find(b => b.name == 'stiffener')!.box
       const onPlate: Box3 = {
         min: [Math.max(stiffener.min[0], -w / 2), Math.max(stiffener.min[1], -h / 2), stiffener.min[2]],
         max: [Math.min(stiffener.max[0], w / 2), Math.min(stiffener.max[1], h / 2), stiffener.max[2]],
