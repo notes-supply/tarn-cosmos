@@ -177,6 +177,12 @@ export interface CuttleBaseKey {
   aspect: number
   cluster: string
   variant?: Record<string, any>
+  /**
+   * Tarn: true for the keys of a left half that Cosmos lays out like a right half (flipLeft). Their
+   * sockets are flipped in X before the half is mirrored, so a socket footprint that is not centred
+   * (socketOffset) is flipped too.
+   */
+  mirrored?: boolean
 }
 
 export interface Keycap {

@@ -1,7 +1,7 @@
 import { keyInfo } from '$lib/geometry/keycaps'
 import { boardElements, holderBoundsOrigin, holderOuterRadius, holderThickness, localHolderBounds } from '$lib/geometry/microcontrollers'
 import { SCREWS } from '$lib/geometry/screws'
-import { partBottom, socketHeight, socketSize } from '$lib/geometry/socketsParts'
+import { partBottom, socketHeight, socketOffset, socketSize } from '$lib/geometry/socketsParts'
 import { switchInfo } from '$lib/geometry/switches'
 import { wallBezier, wallCurveRounded, wallSurfacesInnerRoundedTop, wallSurfacesOuterRoundedTop } from '@pro/rounded'
 import { stiltsScrewOrigin } from '@pro/stiltsGeometry'
@@ -154,13 +154,15 @@ export function keyCriticalPoints(c: Cuttleform, key: CuttleKey, hole: Trsf, off
   // Compute width and height of the key based on its aspect ratio
   const width = size[0] * Math.max(1, key.aspect)
   const height = size[1] * Math.max(1, 1 / key.aspect)
+  // Tarn: sockets whose footprint is not centred on the switch
+  const [ox, oy] = socketOffset(key)
 
   // Return the points!
   return [
-    hole.pretranslated(-width / 2 - offset, height / 2 + offset, 0),
-    hole.pretranslated(width / 2 + offset, height / 2 + offset, 0),
-    hole.pretranslated(width / 2 + offset, -height / 2 - offset, 0),
-    hole.pretranslated(-width / 2 - offset, -height / 2 - offset, 0),
+    hole.pretranslated(ox - width / 2 - offset, oy + height / 2 + offset, 0),
+    hole.pretranslated(ox + width / 2 + offset, oy + height / 2 + offset, 0),
+    hole.pretranslated(ox + width / 2 + offset, oy - height / 2 - offset, 0),
+    hole.pretranslated(ox - width / 2 - offset, oy - height / 2 - offset, 0),
   ]
 }
 

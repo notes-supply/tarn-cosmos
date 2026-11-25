@@ -244,6 +244,35 @@ export const PART_INFO: Record<CuttleKey['type'], PartInfo> = {
     icon: 'choc',
     bomIcon: 'switch',
   },
+  // Tarn: holds one island of the Tarn flex harness (FR4 1.6 stiffener, 0.12 flex, Kailh hotswap socket)
+  // with a printed keeper under the hotswap socket. Geometry and facts: src/lib/tarn/socket.ts, whose
+  // numbers these must match (src/lib/tarn/socket.test.ts checks it). The island is off-centre, so the
+  // footprint is offset; 'Island East' turns everything 180 degrees.
+  'choc-v2-tarn': {
+    partName: 'Choc V2 + Tarn Flex Harness',
+    bomName: () => 'Kailh Choc V2 Switch',
+    category: 'Sockets',
+    stepFile: '/target/key-choc-v2-tarn.step',
+    partOverride: CHOC_PART,
+    singlePartForVariants: true,
+    socketSize: () => [19.6, 19.9, 2.2] as PartSize,
+    socketOffset: (v: Variant) => (v.island == 'Island East' ? [0.6, 0.55] : [-0.6, -0.55]) as [number, number],
+    // Both offsets at once (the floor only needs the corners), so it also holds for mirrored keys.
+    partBottom: () => [box(20.8, 21, 10.32)],
+    keycap: 'mx',
+    extraBomItems: () => ({ 'tarn-keeper': { item: 'Tarn keeper (printed, keeper.stl)', icon: 'pcb', count: 1 } }),
+    variants: {
+      island: ['Island West', 'Island East'],
+    },
+    encodeVariant: makeEncodeVariant('choc-v2-tarn', { island: 1 }),
+    decodeVariant: makeDecodeVariant('choc-v2-tarn', { island: 1 }),
+    numPins: () => ({ matrix: 1 }),
+    flipPart: (v: Variant) => v.island == 'Island East',
+    description:
+      'Holds one island of the Tarn flex harness: the island sits under a 1.2 mm plate, its stiffener against the plate, and a printed keeper that slides and clicks in under its hotswap socket takes the switch insertion force. The pocket is open on all four sides for the harness links. Island West/East picks the side of the key the island sits on; a mirrored half gets the other one.',
+    icon: 'choc',
+    bomIcon: 'switch',
+  },
   'choc-v1-hotswap': {
     partName: 'Choc V1 + 3DP Hotswap',
     bomName: (v: Variant) => `Kailh Choc V1 Switch`,
@@ -870,6 +899,8 @@ type PartInfoVariant = {
   numPins?: (v: Variant) => Pins
   /** If true, flip the part 180 degrees about the z axis. */
   flipPart?: (v: Variant) => boolean
+  /** Centre of the socket's footprint (socketSize) in the key frame, when it is not at the switch. */
+  socketOffset?: (v: Variant) => [number, number]
 }
 export type PartInfo = (PartInfoNonVariant | PartInfoVariant) & {
   partName: string
@@ -924,6 +955,14 @@ export function socketSize(k: CuttleKey, withMargin = true): PartSize {
   if ('variants' in info) return truePartSize(k, info.socketSize(k.variant!, k), withMargin)
   if (typeof info.socketSize == 'function') return truePartSize(k, info.socketSize(k), withMargin)
   return truePartSize(k, info.socketSize, withMargin)
+}
+/** Centre of the socket's footprint in the key frame: [0, 0] except for sockets with a socketOffset. */
+export function socketOffset(k: CuttleKey): [number, number] {
+  const info = PART_INFO[k.type]
+  if (!('variants' in info) || !info.socketOffset) return [0, 0]
+  const [x, y] = info.socketOffset(k.variant || {})
+  // A mirrored left-half key's socket is flipped in X (CuttleBaseKey.mirrored)
+  return k.mirrored ? [-x, y] : [x, y]
 }
 export function socketHeight(k: CuttleKey): number {
   const size = socketSize(k)

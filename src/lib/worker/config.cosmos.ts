@@ -543,6 +543,7 @@ export function toCuttleKey(c: CosmosKeyboard, cluster: CosmosCluster, col: Cosm
     position: cosmosKeyPosition(key, col, cluster, c, flipLeft),
   } as any
   cuttleKey.variant = decodeVariant(cuttleKey.type, key.partType.variant ?? col.partType.variant ?? cluster.partType.variant ?? c.partType.variant!)
+  if (flipLeft && cluster.side == 'left' && !c.unibody) cuttleKey.mirrored = true
   if (PART_INFO[cuttleKey.type].keycap) {
     ;(cuttleKey as any).keycap = {
       letter: key.profile.letter,
@@ -978,19 +979,35 @@ function mirrorRotationTuple(t: bigint | undefined) {
   return encodeTuple([x, -y, -z])
 }
 
+/**
+ * Tarn: the Tarn socket's island sits on one side of the key ('Island West' or
+ * 'Island East'). Mirroring a half moves it to the other side, so a mirrored
+ * part type gets the other variant. `inherited` is the part type the level
+ * inherits; only a level that names a variant, or a cluster that inherits one
+ * from the keyboard, is changed.
+ */
+function mirrorPartType(p: PartType, inherited: PartType | undefined): PartType {
+  const type = p.type ?? inherited?.type
+  if (type != 'choc-v2-tarn') return { ...p }
+  const variant = p.variant ?? inherited?.variant
+  if (variant === undefined) return { ...p }
+  return { ...p, variant: variant ^ 1 }
+}
+
 export function mirrorCluster(clr: CosmosCluster, kbd: CosmosKeyboard | undefined, flipLetters = true): CosmosCluster {
   if (clr.side === 'center') return clr // Center clusters don't get mirrored
+  const clusterType: PartType = { ...kbd?.partType, ...trimUndefined(clr.partType) }
   return {
     ...clr,
     curvature: { ...clr.curvature },
-    partType: { ...clr.partType },
+    partType: mirrorPartType(clr.partType, kbd?.partType),
     side: 'left',
     position: mirrorPositionTuple(clr.position),
     rotation: mirrorRotationTuple(clr.rotation),
     clusters: clr.clusters.map(c => ({
       ...c,
       curvature: { ...c.curvature },
-      partType: { ...c.partType },
+      partType: c.partType.variant === undefined ? { ...c.partType } : mirrorPartType(c.partType, clusterType),
       side: 'left',
       position: mirrorPositionTuple(c.position),
       rotation: mirrorRotationTuple(c.rotation),
@@ -998,7 +1015,7 @@ export function mirrorCluster(clr: CosmosCluster, kbd: CosmosKeyboard | undefine
       keys: c.keys.map(k => ({
         ...k,
         profile: { ...k.profile, letter: flipLetters ? flippedKey(k.profile.letter, kbd?.layout) : k.profile.letter },
-        partType: { ...k.partType },
+        partType: k.partType.variant === undefined ? { ...k.partType } : mirrorPartType(k.partType, { ...clusterType, ...trimUndefined(c.partType) }),
         column: typeof k.column != 'undefined' ? -k.column : undefined,
         position: mirrorPositionTuple(k.position),
         rotation: mirrorRotationTuple(k.rotation),

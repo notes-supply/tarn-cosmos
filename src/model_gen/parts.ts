@@ -12,6 +12,7 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import { fileURLToPath } from 'url'
 import { allVariants, decodeVariant, PART_INFO, variantURL, variantURLs } from '../lib/geometry/socketsParts'
 import type { PartInfo } from '../lib/geometry/socketsParts'
+import { socketSolid as tarnSocketSolid } from '../lib/tarn/socket'
 import { exportGLTF } from './exportGLTF'
 import { importSTEPSpecifically, maybeStat, serialize } from './modeling'
 import { setup } from './node-model'
@@ -214,6 +215,15 @@ async function main() {
   pool.add('Klavgen Switch', () => genPart('switch-mx-klavgen', 'switch-cherry-mx'))
 
   poolChocV1('choc', 'choc-v1', 'choc-v2')
+  // Tarn's Choc V2 socket is generated from its parameters (src/lib/tarn/socket.ts), 'Island East' turned
+  // 180 degrees. It takes under a second, so it is always rebuilt (addIfModified only rebuilds missing files
+  // outside CI).
+  pool.add('Tarn Choc V2 socket', async () => {
+    for (const variant of allVariants('choc-v2-tarn')) {
+      const solid = tarnSocketSolid()
+      await writeModel(variantFile('choc-v2-tarn', variant), variant.island == 'Island East' ? solid.rotate(180) : solid)
+    }
+  })
   poolChocV1('choc-hotswap', 'choc-v1-hotswap', 'choc-v2-hotswap', true)
   poolVariants('mx-pcb-plum', ledWork())
   poolVariants('mx-skree', ledWork())

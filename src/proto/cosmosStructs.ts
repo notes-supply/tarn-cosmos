@@ -30,6 +30,8 @@ enumeration('PART', {
   26: 'niz',
   31: 'choc-pumpkin',
   33: 'choc-v1-amoeba-hillside',
+  // Tarn (notes-supply/tarn-cosmos). Numbered well clear of upstream's range so upstream additions don't collide.
+  100: 'choc-v2-tarn',
 
   // You wouldn't put many of these on a keyboard.
   16: 'ec11',
